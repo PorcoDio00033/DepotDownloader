@@ -119,3 +119,7 @@ cryptopp/
 # misc
 Thumbs.db
 launchSettings.json
+
+depots/
+manifest_backups/
+plans/

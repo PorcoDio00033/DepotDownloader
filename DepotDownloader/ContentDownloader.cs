@@ -13,6 +13,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using SteamKit2;
 using SteamKit2.CDN;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace DepotDownloader
 {
@@ -591,6 +593,11 @@ namespace DepotDownloader
             try
             {
                 await DownloadSteam3Async(infos).ConfigureAwait(false);
+
+                if (Config.BackupManifests)
+                {
+                    CreateAppBackup(appId, infos);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -901,7 +908,21 @@ namespace DepotDownloader
                     cts.Token.ThrowIfCancellationRequested();
 
                     Util.SaveManifestToFile(configDir, newManifest);
+
                 }
+            }
+
+            if (newManifest != null && Config.BackupManifests)
+            {
+                var backupDir = Path.Combine("manifest_backups", depot.AppId.ToString());
+
+                if (steam3 != null && steam3.AppInfo.TryGetValue(depot.AppId, out var appInfo) && appInfo != null)
+                {
+                    backupDir = Path.Combine(backupDir, appInfo.ChangeNumber.ToString());
+                }
+
+                Directory.CreateDirectory(backupDir);
+                Util.SaveManifestToFile(backupDir, newManifest);
             }
 
             Console.WriteLine("Manifest {0} ({1})", depot.ManifestId, newManifest.CreationTime);
@@ -1428,6 +1449,169 @@ namespace DepotDownloader
                 var sha1Hash = Convert.ToHexString(file.FileHash).ToLower();
                 sw.WriteLine($"{file.TotalSize,14:d} {file.Chunks.Count,6:d} {sha1Hash} {(int)file.Flags,5:x} {file.FileName}");
             }
+        }
+
+        static void CreateAppBackup(uint appId, List<DepotDownloadInfo> depots)
+        {
+            if (depots == null || depots.Count == 0)
+                return;
+
+            if (steam3 == null || !steam3.AppInfo.TryGetValue(appId, out var appInfo) || appInfo == null)
+            {
+                Console.WriteLine("AppInfo not available for backup.");
+                return;
+            }
+
+            var backupDir = Path.Combine("manifest_backups", appId.ToString(), appInfo.ChangeNumber.ToString());
+
+            Directory.CreateDirectory(backupDir);
+            SaveAppInfoAsJson(appId, backupDir);
+            SaveLuaScript(appId, depots, backupDir);
+            SaveKeyVdf(depots, backupDir);
+            SaveAppTokens(backupDir, steam3.AppTokens);
+
+            Console.WriteLine("Backup created in {0}", backupDir);
+        }
+
+        static void SaveAppInfoAsJson(uint appId, string backupDir)
+        {
+            if (steam3 == null || !steam3.AppInfo.TryGetValue(appId, out var appInfo) || appInfo == null)
+            {
+                Console.WriteLine("AppInfo not available for backup.");
+                return;
+            }
+
+            var path = Path.Combine(backupDir, $"{appId}.json");
+            if (File.Exists(path)) return;
+
+            var rootNode = KeyValueToJson(appInfo.KeyValues);
+            // Inject keys
+            if (rootNode is JsonObject rootObj)
+            {
+                rootObj["_missing_token"] = appInfo.MissingToken;
+                rootObj["_sha"] = appInfo.SHAHash != null ? Convert.ToHexString(appInfo.SHAHash).ToLowerInvariant() : null;
+                rootObj["_change_number"] = appInfo.ChangeNumber;
+
+                if (rootObj["depots"] is JsonObject || rootObj["depot"] is JsonObject)
+                {
+                    var depotsNode = rootObj["depots"] as JsonObject ?? rootObj["depot"] as JsonObject;
+                    if (depotsNode != null)
+                    {
+                        foreach (var kvp in steam3.DepotKeys)
+                        {
+                            var depotIdStr = kvp.Key.ToString();
+                            if (depotsNode[depotIdStr] is JsonObject depotNode)
+                            {
+                                depotNode["decryptionkey"] = Convert.ToHexString(kvp.Value).ToLowerInvariant();
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (rootNode is JsonObject rootObj2)
+            {
+                if (steam3.AppTokens.TryGetValue(appId, out var token))
+                {
+                    rootObj2["accesstoken"] = token.ToString();
+                }
+            }
+
+            var jsonString = rootNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true, IndentSize = 4 });
+            File.WriteAllText(path, jsonString);
+        }
+
+        static JsonNode KeyValueToJson(KeyValue kv)
+        {
+            if (kv.Children.Count > 0)
+            {
+                var obj = new JsonObject();
+                foreach (var child in kv.Children)
+                {
+                    if (!obj.ContainsKey(child.Name))
+                    {
+                        obj.Add(child.Name, KeyValueToJson(child));
+                    }
+                }
+                return obj;
+            }
+
+            if (long.TryParse(kv.Value, out var lVal))
+            {
+                if (lVal > int.MaxValue || lVal < int.MinValue)
+                    return JsonValue.Create(kv.Value);
+                else
+                    return JsonValue.Create(lVal);
+            }
+
+            return JsonValue.Create(kv.Value);
+        }
+
+        static void SaveLuaScript(uint appId, List<DepotDownloadInfo> depots, string backupDir)
+        {
+            var path = Path.Combine(backupDir, $"{appId}.lua");
+            if (File.Exists(path)) return;
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"addappid({appId})");
+
+            foreach (var depot in depots)
+            {
+                if (depot.DepotKey != null)
+                {
+                    var keyStr = Convert.ToHexString(depot.DepotKey).ToLowerInvariant();
+                    sb.AppendLine($"addappid({depot.DepotId},0,\"{keyStr}\")");
+                }
+                if (depot.ManifestId != INVALID_MANIFEST_ID)
+                {
+                    sb.AppendLine($"setManifestid({depot.DepotId},\"{depot.ManifestId}\")");
+                }
+            }
+
+            File.WriteAllText(path, sb.ToString());
+        }
+
+        static void SaveKeyVdf(List<DepotDownloadInfo> depots, string backupDir)
+        {
+            var path = Path.Combine(backupDir, "key.vdf");
+            if (File.Exists(path)) return;
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("\"depots\"");
+            sb.AppendLine("{");
+
+            foreach (var depot in depots)
+            {
+                if (depot.DepotKey != null)
+                {
+                    var keyStr = Convert.ToHexString(depot.DepotKey).ToLowerInvariant();
+                    sb.AppendLine($"    \"{depot.DepotId}\"");
+                    sb.AppendLine("    {");
+                    sb.AppendLine($"        \"DecryptionKey\" \"{keyStr}\"");
+                    sb.AppendLine("    }");
+                }
+            }
+            sb.AppendLine("}");
+
+            File.WriteAllText(path, sb.ToString());
+        }
+
+        static void SaveAppTokens(string backupDir, Dictionary<uint, ulong> appTokens)
+        {
+            if (appTokens == null || appTokens.Count == 0)
+                return;
+
+            var path = Path.Combine(backupDir, "app_tokens.json");
+            if (File.Exists(path)) return;
+
+            var obj = new JsonObject();
+            foreach (var kvp in appTokens)
+            {
+                obj.Add(kvp.Key.ToString(), JsonValue.Create(kvp.Value.ToString()));
+            }
+
+            var jsonString = obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true, IndentSize = 4 });
+            File.WriteAllText(path, jsonString);
         }
     }
 }
