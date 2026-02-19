@@ -453,7 +453,7 @@ namespace DepotDownloader
             File.Move(fileStagingPath, fileFinalPath);
         }
 
-        public static async Task DownloadAppAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc)
+        public static async Task DownloadAppAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc, bool includeDlc = false)
         {
             cdnPool = new CDNClientPool(steam3, appId);
 
@@ -465,7 +465,10 @@ namespace DepotDownloader
             }
 
             Directory.CreateDirectory(Path.Combine(configPath, CONFIG_DIR));
-            DepotConfigStore.LoadFromFile(Path.Combine(configPath, CONFIG_DIR, "depot.config"));
+            if (DepotConfigStore.Instance == null)
+            {
+                DepotConfigStore.LoadFromFile(Path.Combine(configPath, CONFIG_DIR, "depot.config"));
+            }
 
             await steam3?.RequestAppInfo(appId);
 
@@ -603,6 +606,33 @@ namespace DepotDownloader
             {
                 Console.WriteLine("App {0} was not completely downloaded.", appId);
                 throw;
+            }
+
+            if (includeDlc)
+            {
+                var extendedInfo = GetSteam3AppSection(appId, EAppInfoSection.Extended);
+                if (extendedInfo != null && extendedInfo["listofdlc"] != KeyValue.Invalid)
+                {
+                    Console.WriteLine($"{appId} returned the following DLCs: {extendedInfo["listofdlc"].Value}");
+                    var dlcString = extendedInfo["listofdlc"].Value;
+                    if (!string.IsNullOrEmpty(dlcString))
+                    {
+                        var dlcAppIds = dlcString.Split(',').Select(uint.Parse).ToList();
+
+                        foreach (var dlcAppId in dlcAppIds)
+                        {
+                            try
+                            {
+                                Console.WriteLine($"Found DLC {dlcAppId}, downloading...");
+                                await DownloadAppAsync(dlcAppId, [], branch, os, arch, language, lv, isUgc, includeDlc);
+                            }
+                            catch (ContentDownloaderException e)
+                            {
+                                Console.WriteLine(e.Message);
+                            }
+                        }
+                    }
+                }
             }
         }
 

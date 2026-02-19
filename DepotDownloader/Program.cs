@@ -157,6 +157,7 @@ namespace DepotDownloader
             ContentDownloader.Config.MaxDownloads = GetParameter(args, "-max-downloads", 8);
             ContentDownloader.Config.LoginID = HasParameter(args, "-loginid") ? GetParameter<uint>(args, "-loginid") : null;
             ContentDownloader.Config.BackupManifests = HasParameter(args, "-backup-manifests");
+            ContentDownloader.Config.IncludeDLCs = HasParameter(args, "-include-dlc");
 
             #endregion
 
@@ -314,7 +315,7 @@ namespace DepotDownloader
                 {
                     try
                     {
-                        await ContentDownloader.DownloadAppAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUGC).ConfigureAwait(false);
+                        await ContentDownloader.DownloadAppAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUGC, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (
                         ex is ContentDownloaderException
@@ -509,6 +510,7 @@ namespace DepotDownloader
             Console.WriteLine("  -all-languages           - download all language-specific depots when -app is used.");
             Console.WriteLine("  -language <lang>         - the language for which to download the game (default: english)");
             Console.WriteLine("  -lowviolence             - download low violence depots when -app is used.");
+            Console.WriteLine("  -include-dlc             - if set, also download all DLCs for the given app.");
             Console.WriteLine();
             Console.WriteLine("  -ugc <#>                 - the UGC ID to download.");
             Console.WriteLine("  -pubfile <#>             - the PublishedFileId to download. (Will automatically resolve to UGC id)");
