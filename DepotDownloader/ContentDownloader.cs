@@ -599,7 +599,7 @@ namespace DepotDownloader
 
                 if (Config.BackupManifests)
                 {
-                    CreateAppBackup(appId, infos);
+                    CreateAppBackup(appId, infos, branch);
                 }
             }
             catch (OperationCanceledException)
@@ -946,7 +946,12 @@ namespace DepotDownloader
             {
                 var backupDir = Path.Combine("manifest_backups", depot.AppId.ToString());
 
-                if (steam3 != null && steam3.AppInfo.TryGetValue(depot.AppId, out var appInfo) && appInfo != null)
+                var buildId = GetSteam3AppBuildNumber(depot.AppId, depot.Branch);
+                if (buildId != 0)
+                {
+                    backupDir = Path.Combine(backupDir, buildId.ToString());
+                }
+                else if (steam3 != null && steam3.AppInfo.TryGetValue(depot.AppId, out var appInfo) && appInfo != null)
                 {
                     backupDir = Path.Combine(backupDir, appInfo.ChangeNumber.ToString());
                 }
@@ -1481,7 +1486,7 @@ namespace DepotDownloader
             }
         }
 
-        static void CreateAppBackup(uint appId, List<DepotDownloadInfo> depots)
+        static void CreateAppBackup(uint appId, List<DepotDownloadInfo> depots, string branch)
         {
             if (depots == null || depots.Count == 0)
                 return;
@@ -1492,7 +1497,10 @@ namespace DepotDownloader
                 return;
             }
 
-            var backupDir = Path.Combine("manifest_backups", appId.ToString(), appInfo.ChangeNumber.ToString());
+            var buildId = GetSteam3AppBuildNumber(appId, branch);
+            var buildIdStr = buildId != 0 ? buildId.ToString() : appInfo.ChangeNumber.ToString();
+
+            var backupDir = Path.Combine("manifest_backups", appId.ToString(), buildIdStr);
 
             Directory.CreateDirectory(backupDir);
             SaveAppInfoAsJson(appId, backupDir);

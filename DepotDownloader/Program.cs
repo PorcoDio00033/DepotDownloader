@@ -532,7 +532,7 @@ namespace DepotDownloader
             Console.WriteLine("  -max-downloads <#>       - maximum number of chunks to download concurrently. (default: 8).");
             Console.WriteLine("  -loginid <#>             - a unique 32-bit integer Steam LogonID in decimal, required if running multiple instances of DepotDownloader concurrently.");
             Console.WriteLine("  -use-lancache            - forces downloads over the local network via a Lancache instance.");
-            Console.WriteLine("  -backup-manifests        - saves manifests and app info in a new \"manifest_backups/{appId}/{changeNumber}/\" dir.");
+            Console.WriteLine("  -backup-manifests        - saves manifests and app info in a new \"manifest_backups/{appId}/{buildid}/\" dir.");
             Console.WriteLine();
             Console.WriteLine("  -debug                   - enable verbose debug logging.");
             Console.WriteLine("  -V or --version          - print version and runtime.");
