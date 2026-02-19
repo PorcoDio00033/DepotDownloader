@@ -15,7 +15,7 @@ namespace DepotDownloader
     class CDNClientPool
     {
         private readonly Steam3Session steamSession;
-        private readonly uint appId;
+        public uint AppId { get; }
         public Client CDNClient { get; }
         public Server ProxyServer { get; private set; }
 
@@ -25,7 +25,7 @@ namespace DepotDownloader
         public CDNClientPool(Steam3Session steamSession, uint appId)
         {
             this.steamSession = steamSession;
-            this.appId = appId;
+            AppId = appId;
             CDNClient = new Client(steamSession.steamClient);
         }
 
@@ -38,7 +38,7 @@ namespace DepotDownloader
             var weightedCdnServers = servers
                 .Where(server =>
                 {
-                    var isEligibleForApp = server.AllowedAppIds.Length == 0 || server.AllowedAppIds.Contains(appId);
+                    var isEligibleForApp = server.AllowedAppIds.Length == 0 || server.AllowedAppIds.Contains(AppId);
                     return isEligibleForApp && (server.Type == "SteamCache" || server.Type == "CDN");
                 })
                 .Select(server =>

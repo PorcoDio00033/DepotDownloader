@@ -488,6 +488,38 @@ namespace DepotDownloader
                 }
             }
 
+            if (Config.DownloadAllBranches && branch == null)
+            {
+                var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+                var branches = depots["branches"];
+
+                foreach (var branchChild in branches.Children)
+                {
+                    var branchName = branchChild.Name;
+                    if (branchChild["pwdrequired"].AsBoolean())
+                    {
+                        Console.WriteLine("Skipping password-protected branch '{0}'.", branchName);
+                        continue;
+                    }
+
+                    // Ensure cdnPool is correct for this iteration (in case DLC download changed it)
+                    if (cdnPool.AppId != appId)
+                    {
+                        cdnPool = new CDNClientPool(steam3, appId);
+                    }
+
+                    await DownloadAppBranchAsync(appId, depotManifestIds, branchName, os, arch, language, lv, isUgc, includeDlc).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                branch ??= DEFAULT_BRANCH;
+                await DownloadAppBranchAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUgc, includeDlc).ConfigureAwait(false);
+            }
+        }
+
+        private static async Task DownloadAppBranchAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc, bool includeDlc = false)
+        {
             var hasSpecificDepots = depotManifestIds.Count > 0;
             var depotIdsFound = new List<uint>();
             var depotIdsExpected = depotManifestIds.Select(x => x.depotId).ToList();

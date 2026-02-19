@@ -248,10 +248,25 @@ namespace DepotDownloader
             {
                 #region App downloading
 
-                var branch = GetParameter<string>(args, "-branch") ?? GetParameter<string>(args, "-beta") ?? ContentDownloader.DEFAULT_BRANCH;
+                var branch = GetParameter<string>(args, "-branch") ?? GetParameter<string>(args, "-beta");
+                ContentDownloader.Config.DownloadAllBranches = HasParameter(args, "-all-branches");
+
+                if (ContentDownloader.Config.DownloadAllBranches)
+                {
+                    if (branch != null)
+                    {
+                        Console.WriteLine("Warning: -branch ignored because -all-branches is specified.");
+                    }
+                    branch = null;
+                }
+                else
+                {
+                    branch ??= ContentDownloader.DEFAULT_BRANCH;
+                }
+
                 ContentDownloader.Config.BetaPassword = GetParameter<string>(args, "-branchpassword") ?? GetParameter<string>(args, "-betapassword");
 
-                if (!string.IsNullOrEmpty(ContentDownloader.Config.BetaPassword) && string.IsNullOrEmpty(branch))
+                if (!string.IsNullOrEmpty(ContentDownloader.Config.BetaPassword) && string.IsNullOrEmpty(branch) && !ContentDownloader.Config.DownloadAllBranches)
                 {
                     Console.WriteLine("Error: Cannot specify -branchpassword when -branch is not specified.");
                     return 1;
@@ -502,6 +517,7 @@ namespace DepotDownloader
             Console.WriteLine("  -depot <#>               - the DepotID to download.");
             Console.WriteLine("  -manifest <id>           - manifest id of content to download (requires -depot, default: current for branch).");
             Console.WriteLine($"  -branch <branchname>    - download from specified branch if available (default: {ContentDownloader.DEFAULT_BRANCH}).");
+            Console.WriteLine("  -all-branches            - download all available branches.");
             Console.WriteLine("  -branchpassword <pass>   - branch password if applicable.");
             Console.WriteLine("  -all-platforms           - downloads all platform-specific depots when -app is used.");
             Console.WriteLine("  -all-archs               - download all architecture-specific depots when -app is used.");
