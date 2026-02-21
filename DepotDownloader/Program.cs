@@ -66,12 +66,19 @@ namespace DepotDownloader
 
             var username = GetParameter<string>(args, "-username") ?? GetParameter<string>(args, "-user");
             var password = GetParameter<string>(args, "-password") ?? GetParameter<string>(args, "-pass");
+            ContentDownloader.Config.LoginToken = GetParameter<string>(args, "-token") ?? GetParameter<string>(args, "-login-token");
             ContentDownloader.Config.RememberPassword = HasParameter(args, "-remember-password");
             ContentDownloader.Config.UseQrCode = HasParameter(args, "-qr");
             ContentDownloader.Config.SkipAppConfirmation = HasParameter(args, "-no-mobile");
 
             if (username == null)
             {
+                if (ContentDownloader.Config.LoginToken != null)
+                {
+                    Console.WriteLine("Error: -token requires -username to be specified.");
+                    return 1;
+                }
+
                 if (ContentDownloader.Config.RememberPassword && !ContentDownloader.Config.UseQrCode)
                 {
                     Console.WriteLine("Error: -remember-password can not be used without -username or -qr.");
@@ -363,7 +370,7 @@ namespace DepotDownloader
 
         static bool InitializeSteam(string username, string password)
         {
-            if (!ContentDownloader.Config.UseQrCode)
+            if (!ContentDownloader.Config.UseQrCode && ContentDownloader.Config.LoginToken == null)
             {
                 if (username != null && password == null && (!ContentDownloader.Config.RememberPassword || !AccountSettingsStore.Instance.LoginTokens.ContainsKey(username)))
                 {
@@ -533,6 +540,7 @@ namespace DepotDownloader
             Console.WriteLine();
             Console.WriteLine("  -username <user>         - the username of the account to login to for restricted content.");
             Console.WriteLine("  -password <pass>         - the password of the account to login to for restricted content.");
+            Console.WriteLine("  -token <token>           - the refresh token of the account to login to for restricted content (requires -username).");
             Console.WriteLine("  -remember-password       - if set, remember the password for subsequent logins of this user.");
             Console.WriteLine("                             use -username <username> -remember-password as login credentials.");
             Console.WriteLine("  -qr                      - display a login QR code to be scanned with the Steam mobile app");

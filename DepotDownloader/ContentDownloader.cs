@@ -60,12 +60,91 @@ namespace DepotDownloader
             public byte[] DepotKey { get; } = depotKey;
         }
 
-        static bool CreateDirectories(uint depotId, uint depotVersion, out string installDir)
+        static string SanitizePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return path;
+
+            // Remove invalid characters for both Windows and Unix
+            // Explicitly include separators to prevent path traversal via ".." or subdirectories
+            var invalidChars = Path.GetInvalidFileNameChars()
+                .Concat(Path.GetInvalidPathChars())
+                .Concat(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar })
+                .Distinct();
+
+            foreach (var c in invalidChars)
+            {
+                path = path.Replace(c.ToString(), "");
+            }
+
+            // Prevent reserved names that could lead to traversal
+            if (path == "." || path == "..")
+            {
+                return "_" + path;
+            }
+
+            return path;
+        }
+
+        static string ResolveInstallDirectory(uint appId, uint depotId, uint buildId, string branch, uint? parentAppId, KeyValue depotConfig)
+        {
+            var installDir = Config.InstallDirectory;
+
+            if (string.IsNullOrWhiteSpace(installDir))
+            {
+                return null;
+            }
+
+            // If no variables are used, return the static path
+            if (!installDir.Contains('{'))
+            {
+                return installDir;
+            }
+
+            var gameName = GetAppName(parentAppId ?? appId);
+            var os = "unknown";
+            var arch = "unknown";
+            var language = "unknown";
+
+            if (depotConfig != KeyValue.Invalid)
+            {
+                if (depotConfig["oslist"] != KeyValue.Invalid)
+                    os = depotConfig["oslist"].Value;
+
+                if (depotConfig["osarch"] != KeyValue.Invalid)
+                    arch = depotConfig["osarch"].Value;
+
+                if (depotConfig["language"] != KeyValue.Invalid)
+                    language = depotConfig["language"].Value;
+            }
+
+            // Sanitize values to ensure they are valid for file paths
+            gameName = SanitizePath(gameName);
+            branch = SanitizePath(branch);
+            os = SanitizePath(os);
+            arch = SanitizePath(arch);
+            language = SanitizePath(language);
+
+            installDir = installDir.Replace("{GameName}", gameName, StringComparison.OrdinalIgnoreCase);
+            installDir = installDir.Replace("{AppID}", appId.ToString(), StringComparison.OrdinalIgnoreCase);
+            installDir = installDir.Replace("{DepotID}", depotId.ToString(), StringComparison.OrdinalIgnoreCase);
+            installDir = installDir.Replace("{BuildID}", buildId.ToString(), StringComparison.OrdinalIgnoreCase);
+            installDir = installDir.Replace("{BranchName}", branch, StringComparison.OrdinalIgnoreCase);
+            installDir = installDir.Replace("{OS}", os, StringComparison.OrdinalIgnoreCase);
+            installDir = installDir.Replace("{Arch}", arch, StringComparison.OrdinalIgnoreCase);
+            installDir = installDir.Replace("{Language}", language, StringComparison.OrdinalIgnoreCase);
+
+            return installDir;
+        }
+
+        static bool CreateDirectories(uint appId, uint depotId, uint depotVersion, string branch, uint? parentAppId, KeyValue depotConfig, out string installDir)
         {
             installDir = null;
             try
             {
-                if (string.IsNullOrWhiteSpace(Config.InstallDirectory))
+                var resolvedPath = ResolveInstallDirectory(appId, depotId, depotVersion, branch, parentAppId, depotConfig);
+
+                if (string.IsNullOrWhiteSpace(resolvedPath))
                 {
                     Directory.CreateDirectory(DEFAULT_DOWNLOAD_DIR);
 
@@ -80,16 +159,17 @@ namespace DepotDownloader
                 }
                 else
                 {
-                    Directory.CreateDirectory(Config.InstallDirectory);
+                    Directory.CreateDirectory(resolvedPath);
 
-                    installDir = Config.InstallDirectory;
+                    installDir = resolvedPath;
 
                     Directory.CreateDirectory(Path.Combine(installDir, CONFIG_DIR));
                     Directory.CreateDirectory(Path.Combine(installDir, STAGING_DIR));
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                Console.WriteLine($"Error in CreateDirectories: {ex}");
                 return false;
             }
 
@@ -313,7 +393,11 @@ namespace DepotDownloader
         {
             string loginToken = null;
 
-            if (username != null && Config.RememberPassword)
+            if (Config.LoginToken != null)
+            {
+                loginToken = Config.LoginToken;
+            }
+            else if (username != null && Config.RememberPassword)
             {
                 _ = AccountSettingsStore.Instance.LoginTokens.TryGetValue(username, out loginToken);
             }
@@ -424,7 +508,7 @@ namespace DepotDownloader
 
         private static async Task DownloadWebFile(uint appId, string fileName, string url)
         {
-            if (!CreateDirectories(appId, 0, out var installDir))
+            if (!CreateDirectories(appId, 0, 0, DEFAULT_BRANCH, null, KeyValue.Invalid, out var installDir))
             {
                 Console.WriteLine("Error: Unable to create install directories!");
                 return;
@@ -453,7 +537,7 @@ namespace DepotDownloader
             File.Move(fileStagingPath, fileFinalPath);
         }
 
-        public static async Task DownloadAppAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc, bool includeDlc = false)
+        public static async Task DownloadAppAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc, bool includeDlc = false, uint? parentAppId = null)
         {
             cdnPool = new CDNClientPool(steam3, appId);
 
@@ -462,6 +546,22 @@ namespace DepotDownloader
             if (string.IsNullOrWhiteSpace(configPath))
             {
                 configPath = DEFAULT_DOWNLOAD_DIR;
+            }
+            else
+            {
+                int firstVar = configPath.IndexOf('{');
+                if (firstVar != -1)
+                {
+                    int lastSeparator = configPath.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, firstVar);
+                    if (lastSeparator != -1)
+                    {
+                        configPath = configPath.Substring(0, lastSeparator);
+                    }
+                    else
+                    {
+                        configPath = ".";
+                    }
+                }
             }
 
             Directory.CreateDirectory(Path.Combine(configPath, CONFIG_DIR));
@@ -508,17 +608,17 @@ namespace DepotDownloader
                         cdnPool = new CDNClientPool(steam3, appId);
                     }
 
-                    await DownloadAppBranchAsync(appId, depotManifestIds, branchName, os, arch, language, lv, isUgc, includeDlc).ConfigureAwait(false);
+                    await DownloadAppBranchAsync(appId, depotManifestIds, branchName, os, arch, language, lv, isUgc, includeDlc, parentAppId).ConfigureAwait(false);
                 }
             }
             else
             {
                 branch ??= DEFAULT_BRANCH;
-                await DownloadAppBranchAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUgc, includeDlc).ConfigureAwait(false);
+                await DownloadAppBranchAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUgc, includeDlc, parentAppId).ConfigureAwait(false);
             }
         }
 
-        private static async Task DownloadAppBranchAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc, bool includeDlc = false)
+        private static async Task DownloadAppBranchAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc, bool includeDlc = false, uint? parentAppId = null)
         {
             var hasSpecificDepots = depotManifestIds.Count > 0;
             var depotIdsFound = new List<uint>();
@@ -616,7 +716,14 @@ namespace DepotDownloader
 
             foreach (var (depotId, manifestId) in depotManifestIds)
             {
-                var info = await GetDepotInfo(depotId, appId, manifestId, branch);
+                KeyValue depotConfig = KeyValue.Invalid;
+                var depotSection = depots[depotId.ToString()];
+                if (depotSection != KeyValue.Invalid)
+                {
+                    depotConfig = depotSection["config"];
+                }
+
+                var info = await GetDepotInfo(depotId, appId, manifestId, branch, parentAppId, depotConfig);
                 if (info != null)
                 {
                     infos.Add(info);
@@ -656,7 +763,7 @@ namespace DepotDownloader
                             try
                             {
                                 Console.WriteLine($"Found DLC {dlcAppId}, downloading...");
-                                await DownloadAppAsync(dlcAppId, [], branch, os, arch, language, lv, isUgc, includeDlc);
+                                await DownloadAppAsync(dlcAppId, [], branch, os, arch, language, lv, isUgc, includeDlc, appId);
                             }
                             catch (ContentDownloaderException e)
                             {
@@ -668,7 +775,7 @@ namespace DepotDownloader
             }
         }
 
-        static async Task<DepotDownloadInfo> GetDepotInfo(uint depotId, uint appId, ulong manifestId, string branch)
+        static async Task<DepotDownloadInfo> GetDepotInfo(uint depotId, uint appId, ulong manifestId, string branch, uint? parentAppId, KeyValue depotConfig)
         {
             if (steam3 != null && appId != INVALID_APP_ID)
             {
@@ -708,7 +815,7 @@ namespace DepotDownloader
 
             var uVersion = GetSteam3AppBuildNumber(appId, branch);
 
-            if (!CreateDirectories(depotId, uVersion, out var installDir))
+            if (!CreateDirectories(appId, depotId, uVersion, branch, parentAppId, depotConfig, out var installDir))
             {
                 Console.WriteLine("Error: Unable to create install directories!");
                 return null;

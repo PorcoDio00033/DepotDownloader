@@ -35,5 +35,6 @@ namespace DepotDownloader
         public bool SkipAppConfirmation { get; set; }
         public bool BackupManifests { get; set; }
         public bool IncludeDLCs { get; set; }
+        public string LoginToken { get; set; }
     }
 }

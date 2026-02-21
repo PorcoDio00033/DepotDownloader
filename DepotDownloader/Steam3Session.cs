@@ -60,7 +60,7 @@ namespace DepotDownloader
         public Steam3Session(SteamUser.LogOnDetails details)
         {
             this.logonDetails = details;
-            this.authenticatedUser = details.Username != null || ContentDownloader.Config.UseQrCode;
+            this.authenticatedUser = details.Username != null || ContentDownloader.Config.UseQrCode || details.AccessToken != null;
 
             var clientConfiguration = SteamConfiguration.Create(config =>
                 config
@@ -437,6 +437,10 @@ namespace DepotDownloader
                 if (logonDetails.Username != null)
                 {
                     Console.WriteLine("Logging '{0}' into Steam3...", logonDetails.Username);
+                }
+                else if (logonDetails.AccessToken != null)
+                {
+                    Console.WriteLine("Logging into Steam3 with access token...");
                 }
 
                 if (authSession is null)
