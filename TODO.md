@@ -16,11 +16,12 @@
 - [ ] **Refactor `RestoreAppAsync`**: Move logic to a separate file and restructure for better readability and maintainability.
 - [ ] **Add `-package-id` support**: 
     - Enable downloading collections of AppIDs (packages).
-    - Handle "missing" DLCs that are part of a bundle but not the main AppInfo (e.g., Monster Hunter Rise Sunbreak).
-    - *Investigation needed*: Determine if it's better to fetch `packageId > depotIds` directly or `packageId > appIds > depotIds`. Example: packageIds not always contain depotIds? https://steamdb.info/bundle/32470/#apps
+    - To handle "missing" DLCs that are part of a bundle but not the main AppInfo (e.g., Monster Hunter Rise Sunbreak).
+    - *Investigation needed*: Determine if it's better to fetch `packageId > depotIds` directly or `packageId > appIds > depotIds`.
+    - What about bundles? Cyberpunk2077 has a bundle (but not a package) containing base game + DLC? https://steamdb.info/app/1091500/subs/
 - [ ] **Add `-all-licences` / `-all-apps`**: Fetch all licenses associated with an account instead of specifying a single AppID.
 - [ ] **Add Archive Support**: Implement basic 7z/gzip/zip archive support with splitting logic.
 - [ ] **Support Workshop UGC/Pubfile**: Extend `-backup-manifests` and `-restore-backup` to support Workshop content.
 - [ ] **Manual Backup of Older Manifests**: Add support for manually backing up older depot/manifest IDs and placing them in the correct backup directory.
-    - Not sure if it can be done, maybe depot info has all the details required already to construct {appId}.json
+    - Not sure if it can be done, maybe manifest info has all the details required already to construct {appId}.json
     - Example old manifest ids: https://steamdb.info/depot/1091501/manifests/
