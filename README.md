@@ -5,30 +5,17 @@ Steam depot downloader utilizing the SteamKit2 library. Supports .NET 8.0
 
 This program must be run from a console, it has no GUI.
 
+> **DISCLAIMER:** This fork is intended for backing up metadata of **owned** and **purchased** games. This is **NOT** a piracy tool. Please read the full [DISCLAIMER](DISCLAIMER.md).
+
 ## Installation
 
 ### Directly from GitHub
 
 Download a binary from [the releases page](https://github.com/SteamRE/DepotDownloader/releases/latest).
 
-### via Windows Package Manager CLI (aka winget)
+### From Source
 
-On Windows, [winget](https://github.com/microsoft/winget-cli) users can download and install
-the latest Terminal release by installing the `SteamRE.DepotDownloader`
-package:
-
-```powershell
-winget install --exact --id SteamRE.DepotDownloader
-```
-
-### via Homebrew
-
-On macOS, [Homebrew](https://brew.sh) users can download and install that latest release by running the following commands:
-
-```shell
-brew tap steamre/tools
-brew install depotdownloader
-```
+See [BUILD.md](BUILD.md) for instructions on how to build from source.
 
 ## Usage
 
@@ -59,6 +46,21 @@ For example: `./DepotDownloader -app 730 -pubfile 1885082371`
 
 For example: `./DepotDownloader -app 730 -ugc 770604181014286929`
 
+### Backup and Restore
+
+**Full manifests/metadata backup:**
+```powershell
+# Remove -manifest-only if you want to save full depot files to disk
+./DepotDownloader -app 1091500 -backup-manifests -manifest-only -all-platforms -all-archs -all-languages -all-branches -lowviolence -include-dlc -backup-dir "backups" -username "username" -password "password"
+```
+
+**Restore game from metadata backup:**
+```powershell
+# To target a specific buildID, add one after -restore-backup
+# If buildID is not specified, it will pick the higher one filtered by system compatibility info
+./DepotDownloader -app 1091500 -restore-backup -include-dlc -all-languages -validate -dir "output/{GameName}/{BuildID}" -backup-dir "backups" 
+```
+
 ## Parameters
 
 #### Authentication
@@ -71,6 +73,7 @@ Parameter               | Description
 `-qr`                   | display a login QR code to be scanned with the Steam mobile app
 `-no-mobile`            | prefer entering a 2FA code instead of prompting to accept in the Steam mobile app.
 `-loginid <#>`          | a unique 32-bit integer Steam LogonID in decimal, required if running multiple instances of DepotDownloader concurrently.
+`-token <token>`        | the refresh token of the account to login to for restricted content (requires `-username`).
 
 #### Downloading
 
@@ -83,6 +86,9 @@ Parameter                | Description
 `-pubfile <#>`           | the PublishedFileId to download. (Will automatically resolve to UGC id)
 `-branch <branchname>`   | download from specified branch if available (default: Public).
 `-branchpassword <pass>` | branch password if applicable.
+`-all-branches`          | download all available branches.
+`-include-dlc`           | if set, also download all DLCs for the given app.
+`-minimal-output`        | suppress file-by-file download progress.
 
 #### Download configuration
 
@@ -95,13 +101,16 @@ Parameter               | Description
 `-all-languages`        | download all language-specific depots when `-app` is used.
 `-language <lang>`      | the language for which to download the game (default: english)
 `-lowviolence`          | download low violence depots when `-app` is used.
-`-dir <installdir>`     | the directory in which to place downloaded files.
+`-dir <installdir>`     | the directory in which to place downloaded files. Supports path variables: `{GameName}`, `{AppID}`, `{DepotID}`, `{BuildID}`, `{BranchName}`, `{OS}`, `{Arch}`, `{Language}`.
 `-filelist <file.txt>`  | the name of a local file that contains a list of files to download (from the manifest). prefix file path with `regex:` if you want to match with regex. each file path should be on their own line.
 `-validate`             | include checksum verification of files already downloaded.
 `-manifest-only`        | downloads a human readable manifest for any depots that would be downloaded.
 `-cellid <#>`           | the overridden CellID of the content server to download from.
 `-max-downloads <#>`    | maximum number of chunks to download concurrently. (default: 8).
 `-use-lancache`         | forces downloads over the local network via a Lancache instance.
+`-backup-manifests`     | saves manifests and app info in a new `manifest_backups/{appId}/{buildid}/` dir.
+`-backup-dir <dir>`     | the directory in which to place/read backups (default: `manifest_backups` inside working directory). DOES NOT support path variables.
+`-restore-backup [<build_id>]` | restore from a backup. If `<build_id>` is not specified, the latest backup compatible with system config is used.
 
 #### Other
 
@@ -129,3 +138,9 @@ Steam allows developers to block downloading old manifests, in which case no man
 ### Why am I getting slow download speeds and frequent connection timeouts?
 When downloading old builds, cache server may not have the chunks readily available which makes downloading slower.
 Try increasing `-max-downloads` to saturate the network more.
+
+## Credits
+
+*   **[SteamRE/DepotDownloader](https://github.com/SteamRE/DepotDownloader)** - The original project.
+*   **[SteamRE/SteamKit](https://github.com/SteamRE/SteamKit)** - The library used for interacting with steam.
+*   **[SteamDB](https://steamdb.info/)** - For searching and gathering info about steam.
