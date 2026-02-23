@@ -164,7 +164,9 @@ namespace DepotDownloader
             ContentDownloader.Config.MaxDownloads = GetParameter(args, "-max-downloads", 8);
             ContentDownloader.Config.LoginID = HasParameter(args, "-loginid") ? GetParameter<uint>(args, "-loginid") : null;
             ContentDownloader.Config.BackupManifests = HasParameter(args, "-backup-manifests");
+            ContentDownloader.Config.BackupDirectory = GetParameter<string>(args, "-backup-dir");
             ContentDownloader.Config.IncludeDLCs = HasParameter(args, "-include-dlc");
+            ContentDownloader.Config.MinimalOutput = HasParameter(args, "-minimal-output");
 
             #endregion
 
@@ -255,6 +257,17 @@ namespace DepotDownloader
             {
                 #region App downloading
 
+                ContentDownloader.Config.RestoreBackup = HasParameter(args, "-restore-backup");
+                if (ContentDownloader.Config.RestoreBackup)
+                {
+                    var index = IndexOfParam(args, "-restore-backup");
+                    if (index != -1 && index < args.Length - 1 && !args[index + 1].StartsWith("-"))
+                    {
+                        ContentDownloader.Config.RestoreBuildId = args[index + 1];
+                        consumedArgs[index + 1] = true;
+                    }
+                }
+
                 var branch = GetParameter<string>(args, "-branch") ?? GetParameter<string>(args, "-beta");
                 ContentDownloader.Config.DownloadAllBranches = HasParameter(args, "-all-branches");
 
@@ -337,7 +350,14 @@ namespace DepotDownloader
                 {
                     try
                     {
-                        await ContentDownloader.DownloadAppAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUGC, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                        if (ContentDownloader.Config.RestoreBackup)
+                        {
+                            await ContentDownloader.RestoreAppAsync(appId, ContentDownloader.Config.RestoreBuildId, branch, os, arch, language, lv, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await ContentDownloader.DownloadAppAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUGC, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                        }
                     }
                     catch (Exception ex) when (
                         ex is ContentDownloaderException
@@ -557,6 +577,9 @@ namespace DepotDownloader
             Console.WriteLine("  -loginid <#>             - a unique 32-bit integer Steam LogonID in decimal, required if running multiple instances of DepotDownloader concurrently.");
             Console.WriteLine("  -use-lancache            - forces downloads over the local network via a Lancache instance.");
             Console.WriteLine("  -backup-manifests        - saves manifests and app info in a new \"manifest_backups/{appId}/{buildid}/\" dir.");
+            Console.WriteLine("  -backup-dir <dir>        - the directory in which to place/read backups (default: \"manifest_backups\" inside install dir).");
+            Console.WriteLine("  -restore-backup [<build_id>]   - restore from a backup. If <build_id> is not specified, the latest backup compatible with system config is used.");
+            Console.WriteLine("  -minimal-output          - suppress file-by-file download progress.");
             Console.WriteLine();
             Console.WriteLine("  -debug                   - enable verbose debug logging.");
             Console.WriteLine("  -V or --version          - print version and runtime.");

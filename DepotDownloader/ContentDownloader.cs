@@ -15,6 +15,8 @@ using SteamKit2;
 using SteamKit2.CDN;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace DepotDownloader
 {
@@ -35,7 +37,9 @@ namespace DepotDownloader
         private static CDNClientPool cdnPool;
 
         private const string DEFAULT_DOWNLOAD_DIR = "depots";
+        private const string MANIFEST_BACKUPS_DIR = "manifest_backups";
         private const string CONFIG_DIR = ".DepotDownloader";
+        private const string DEPOT_CONFIG_FILE = "depot.config";
         private static readonly string STAGING_DIR = Path.Combine(CONFIG_DIR, "staging");
 
         private static readonly FrozenSet<EWorkshopFileType> SupportedWorkshopFileTypes = FrozenSet.ToFrozenSet(new[]
@@ -135,6 +139,36 @@ namespace DepotDownloader
             installDir = installDir.Replace("{Language}", language, StringComparison.OrdinalIgnoreCase);
 
             return installDir;
+        }
+
+        static string GetManifestBaseDirectory()
+        {
+            if (!string.IsNullOrWhiteSpace(Config.BackupDirectory))
+            {
+                return Config.BackupDirectory;
+            }
+
+            var installDir = Config.InstallDirectory;
+            if (string.IsNullOrWhiteSpace(installDir))
+            {
+                return MANIFEST_BACKUPS_DIR;
+            }
+
+            int firstVar = installDir.IndexOf('{');
+            if (firstVar != -1)
+            {
+                int lastSeparator = installDir.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, firstVar);
+                if (lastSeparator != -1)
+                {
+                    installDir = installDir.Substring(0, lastSeparator);
+                }
+                else
+                {
+                    return MANIFEST_BACKUPS_DIR;
+                }
+            }
+
+            return Path.Combine(installDir, MANIFEST_BACKUPS_DIR);
         }
 
         static bool CreateDirectories(uint appId, uint depotId, uint depotVersion, string branch, uint? parentAppId, KeyValue depotConfig, out string installDir)
@@ -537,6 +571,540 @@ namespace DepotDownloader
             File.Move(fileStagingPath, fileFinalPath);
         }
 
+        // TODO: refractor needed
+        public static async Task RestoreAppAsync(uint appId, string buildId, string branch, string os, string arch, string language, bool lv, bool includeDlc)
+        {
+            // Load our configuration data containing the depots currently installed
+            var configPath = Config.InstallDirectory;
+            if (string.IsNullOrWhiteSpace(configPath))
+            {
+                configPath = DEFAULT_DOWNLOAD_DIR;
+            }
+            else
+            {
+                int firstVar = configPath.IndexOf('{');
+                if (firstVar != -1)
+                {
+                    int lastSeparator = configPath.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, firstVar);
+                    if (lastSeparator != -1)
+                    {
+                        configPath = configPath.Substring(0, lastSeparator);
+                    }
+                    else
+                    {
+                        configPath = ".";
+                    }
+                }
+            }
+
+            Directory.CreateDirectory(Path.Combine(configPath, CONFIG_DIR));
+            if (DepotConfigStore.Instance == null)
+            {
+                DepotConfigStore.LoadFromFile(Path.Combine(configPath, CONFIG_DIR, DEPOT_CONFIG_FILE));
+            }
+
+            var backupBaseDir = Path.Combine(GetManifestBaseDirectory(), appId.ToString());
+            if (!Directory.Exists(backupBaseDir))
+            {
+                Console.WriteLine($"No backups found for app {appId}");
+                return;
+            }
+
+            string backupDir;
+            if (!string.IsNullOrEmpty(buildId))
+            {
+                backupDir = Path.Combine(backupBaseDir, buildId);
+                if (!Directory.Exists(backupDir))
+                {
+                    Console.WriteLine($"Backup for build {buildId} not found.");
+                    return;
+                }
+            }
+            else
+            {
+                var dirs = Directory.GetDirectories(backupBaseDir);
+                var validDirs = new List<(string Path, uint BuildId)>();
+
+                foreach (var dir in dirs)
+                {
+                    var buildIdVal = await IdentifyBuildFromDirectory(dir, appId);
+                    if (buildIdVal.HasValue)
+                    {
+                        validDirs.Add((dir, buildIdVal.Value));
+                    }
+                    else if (uint.TryParse(Path.GetFileName(dir), out var dirBuildId))
+                    {
+                        validDirs.Add((dir, dirBuildId));
+                    }
+                }
+
+                validDirs = validDirs.OrderByDescending(x => x.BuildId).ToList();
+
+                if (validDirs.Count == 0)
+                {
+                    Console.WriteLine($"No valid backup directories found for app {appId}");
+                    return;
+                }
+
+                backupDir = validDirs.First().Path;
+
+                var targetOS = os ?? Util.GetSteamOS();
+                var targetArch = arch ?? Util.GetSteamArch();
+
+                string bestCompatibleMatch = null;
+                string bestBranchMatch = null;
+                string bestOsMatch = null;
+
+                foreach (var dir in validDirs)
+                {
+                    var checkPath = Path.Combine(dir.Path, $"{appId}.json");
+                    JsonNode depotsNode = null;
+
+                    if (File.Exists(checkPath))
+                    {
+                        try
+                        {
+                            var jsonString = await File.ReadAllTextAsync(checkPath);
+                            var jsonNode = JsonNode.Parse(jsonString);
+                            depotsNode = jsonNode["depots"] ?? jsonNode["depot"];
+                        }
+                        catch { }
+                    }
+
+                    bool branchMatches = true;
+                    if (!string.IsNullOrEmpty(branch))
+                    {
+                        branchMatches = false;
+                        if (depotsNode != null)
+                        {
+                            var branchNode = depotsNode?["branches"]?[branch];
+                            if (branchNode != null)
+                            {
+                                var bId = branchNode["buildid"]?.ToString();
+                                if (bId == dir.BuildId.ToString())
+                                {
+                                    branchMatches = true;
+                                }
+                            }
+                        }
+                    }
+
+                    bool isOsCompatible = IsBackupCompatible(dir.Path, targetOS, targetArch, depotsNode);
+
+                    if (branchMatches)
+                    {
+                        if (bestBranchMatch == null)
+                            bestBranchMatch = dir.Path;
+
+                        if (isOsCompatible)
+                        {
+                            bestCompatibleMatch = dir.Path;
+                            break;
+                        }
+                    }
+
+                    if (isOsCompatible && bestOsMatch == null)
+                    {
+                        bestOsMatch = dir.Path;
+                    }
+                }
+
+                if (bestCompatibleMatch != null)
+                {
+                    backupDir = bestCompatibleMatch;
+                }
+                else if (bestBranchMatch != null)
+                {
+                    backupDir = bestBranchMatch;
+                }
+                else if (bestOsMatch != null)
+                {
+                    backupDir = bestOsMatch;
+                    Console.WriteLine($"Warning: Branch mismatch. Restoring from backup {backupDir} because it matches target OS.");
+                }
+                else
+                {
+                    Console.WriteLine($"Warning: No backup found that matches the target OS/Arch ({targetOS}/{targetArch}).");
+                    Console.WriteLine($"Falling back to backup: {backupDir}");
+                    Console.WriteLine("If this is incorrect, please specify a build ID using -restore-backup <build_id>");
+                }
+
+                Console.WriteLine($"Restoring from backup: {backupDir}");
+            }
+
+            uint targetBuildIdNum = 0;
+            var identifiedBuildId = await IdentifyBuildFromDirectory(backupDir, appId);
+            if (identifiedBuildId.HasValue)
+            {
+                targetBuildIdNum = identifiedBuildId.Value;
+            }
+            else
+            {
+                uint.TryParse(Path.GetFileName(backupDir), out targetBuildIdNum);
+            }
+
+            // Try to infer branch from appinfo.json if we have a specific build ID
+            if (targetBuildIdNum != 0)
+            {
+                var branchCheckAppInfoPath = Path.Combine(backupDir, $"{appId}.json");
+                if (File.Exists(branchCheckAppInfoPath))
+                {
+                    try
+                    {
+                        var jsonString = await File.ReadAllTextAsync(branchCheckAppInfoPath);
+                        var jsonNode = JsonNode.Parse(jsonString);
+                        var depotsNode = jsonNode["depots"] ?? jsonNode["depot"];
+                        if (depotsNode != null)
+                        {
+                            var branchesNode = depotsNode["branches"];
+                            if (branchesNode != null)
+                            {
+                                foreach (var child in branchesNode.AsObject())
+                                {
+                                    var bName = child.Key;
+                                    var bNode = child.Value;
+                                    if (bNode["buildid"]?.ToString() == targetBuildIdNum.ToString())
+                                    {
+                                        if (branch != bName)
+                                        {
+                                            Console.WriteLine($"Inferred branch '{bName}' from build ID {targetBuildIdNum}");
+                                            branch = bName;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            var keyFile = Path.Combine(backupDir, "key.vdf");
+            var luaFile = Path.Combine(backupDir, $"{appId}.lua");
+            var depotKeys = new Dictionary<uint, byte[]>();
+
+            if (File.Exists(keyFile))
+            {
+                Console.WriteLine($"Loading depot keys from {keyFile}");
+                var kv = KeyValue.LoadAsText(keyFile);
+                var target = kv;
+                if (kv.Name != "depots" && kv["depots"] != KeyValue.Invalid)
+                {
+                    target = kv["depots"];
+                }
+
+                foreach (var depotNode in target.Children)
+                {
+                    if (uint.TryParse(depotNode.Name, out var depotId))
+                    {
+                        var keyStr = depotNode["DecryptionKey"].Value;
+                        if (!string.IsNullOrEmpty(keyStr))
+                        {
+                            depotKeys[depotId] = Util.DecodeHexString(keyStr);
+                        }
+                    }
+                }
+            }
+            else if (File.Exists(luaFile))
+            {
+                Console.WriteLine($"Loading depot keys from {luaFile}");
+                depotKeys = LoadLuaKeys(luaFile);
+            }
+            else
+            {
+                Console.WriteLine("Warning: key.vdf and .lua not found in backup. Depots might fail to decrypt.");
+            }
+
+            var manifestFiles = Directory.GetFiles(backupDir, "*.manifest");
+            var depotManifests = new List<(uint depotId, ulong manifestId, string path)>();
+            foreach (var file in manifestFiles)
+            {
+                var fileName = Path.GetFileNameWithoutExtension(file);
+                var parts = fileName.Split('_');
+                if (parts.Length >= 2 && uint.TryParse(parts[0], out var dId) && ulong.TryParse(parts[1], out var mId))
+                {
+                    depotManifests.Add((dId, mId, file));
+                }
+            }
+
+            if (depotManifests.Count == 0)
+            {
+                Console.WriteLine("No manifests found in backup.");
+                return;
+            }
+
+            cdnPool = new CDNClientPool(steam3, appId);
+
+            var appInfoPath = Path.Combine(backupDir, $"{appId}.json");
+            var appInfoLoaded = false;
+            if (File.Exists(appInfoPath))
+            {
+                try
+                {
+                    var jsonString = await File.ReadAllTextAsync(appInfoPath);
+                    var jsonNode = JsonNode.Parse(jsonString);
+                    if (jsonNode is JsonObject jsonObj)
+                    {
+                        var kv = new KeyValue("appinfo");
+                        foreach (var prop in jsonObj)
+                        {
+                            if (prop.Key.StartsWith("_") || prop.Key == "accesstoken") continue;
+
+                            kv.Children.Add(JsonToKeyValue(prop.Key, prop.Value));
+                        }
+
+                        bool missingToken = false;
+                        if (jsonObj.TryGetPropertyValue("_missing_token", out var missingTokenNode))
+                            missingToken = missingTokenNode.GetValue<bool>();
+
+                        uint changeNumber = 0;
+                        if (jsonObj.TryGetPropertyValue("_change_number", out var changeNumberNode))
+                            changeNumber = changeNumberNode.GetValue<uint>();
+
+                        byte[] sha = null;
+                        if (jsonObj.TryGetPropertyValue("_sha", out var shaNode) && shaNode != null)
+                            sha = Util.DecodeHexString(shaNode.GetValue<string>());
+
+                        var newAppInfo = CreatePICSProductInfo(appId, kv, missingToken, changeNumber, sha);
+
+                        steam3.AppInfo[appId] = newAppInfo;
+                        appInfoLoaded = true;
+                        Console.WriteLine($"Loaded AppInfo from {appInfoPath}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Failed to load local AppInfo: {ex.Message}");
+                }
+            }
+
+            if (!appInfoLoaded)
+            {
+                Console.WriteLine("Warning: Local AppInfo not found or failed to load. Falling back to Steam.");
+                await steam3.RequestAppInfo(appId);
+
+                var liveBuildId = GetSteam3AppBuildNumber(appId, branch);
+                if (liveBuildId != targetBuildIdNum)
+                {
+                    Console.WriteLine($"Error: Live Steam data build ID ({liveBuildId}) does not match backup build ID ({targetBuildIdNum}). Aborting restore to prevent data corruption.");
+                    return;
+                }
+            }
+
+            var infos = new List<DepotDownloadInfo>();
+            var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+
+            // Check for missing depots (potential depotfromapp)
+            if (depots != null)
+            {
+                foreach (var child in depots.Children)
+                {
+                    if (uint.TryParse(child.Name, out var dId))
+                    {
+                        if (!depotManifests.Any(x => x.depotId == dId))
+                        {
+                            var depotFromApp = child["depotfromapp"];
+                            if (depotFromApp != KeyValue.Invalid)
+                            {
+                                var otherAppId = depotFromApp.AsUnsignedInteger();
+                                var otherAppBackupBase = Path.Combine(GetManifestBaseDirectory(), otherAppId.ToString());
+
+                                if (Directory.Exists(otherAppBackupBase))
+                                {
+                                    // We don't know the exact manifest ID because it's not in the parent app's info.
+                                    // Search for any manifest for this depot in the other app's backup.
+                                    var searchPattern = $"{dId}_*.manifest";
+                                    var foundFiles = Directory.GetFiles(otherAppBackupBase, searchPattern, SearchOption.AllDirectories);
+
+                                    if (foundFiles.Length > 0)
+                                    {
+                                        // If multiple are found, pick the most recent one
+                                        var bestFile = foundFiles.OrderByDescending(f => File.GetLastWriteTime(f)).First();
+                                        var fileName = Path.GetFileNameWithoutExtension(bestFile);
+                                        var parts = fileName.Split('_');
+
+                                        if (parts.Length >= 2 && ulong.TryParse(parts[1], out var mId))
+                                        {
+                                            Console.WriteLine($"Found manifest for depot {dId} in {otherAppId} backup: {bestFile}");
+                                            depotManifests.Add((dId, mId, bestFile));
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine($"Warning: No manifests found for depot {dId} (from app {otherAppId}) in backup.");
+                                    }
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"Warning: Backup directory for app {otherAppId} not found. Cannot restore depot {dId}.");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            foreach (var (depotId, manifestId, manifestPath) in depotManifests)
+            {
+                byte[] depotKey = null;
+                depotKeys.TryGetValue(depotId, out depotKey);
+
+                // fallbacks if key.vdf is missing
+                if (depotKey == null)
+                {
+                    if (steam3.AppInfo.TryGetValue(appId, out var appInfo) && appInfo?.KeyValues != null)
+                    {
+                        var depotsNode = appInfo.KeyValues["depots"];
+                        if (depotsNode != KeyValue.Invalid)
+                        {
+                            var depotNode = depotsNode[depotId.ToString()];
+                            if (depotNode != KeyValue.Invalid)
+                            {
+                                var keyStr = depotNode["decryptionkey"].Value;
+                                if (!string.IsNullOrEmpty(keyStr))
+                                {
+                                    depotKey = Util.DecodeHexString(keyStr);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (depotKey == null)
+                {
+                    await steam3.RequestDepotKey(depotId, appId);
+                    if (steam3.DepotKeys.TryGetValue(depotId, out var k))
+                    {
+                        depotKey = k;
+                    }
+                }
+
+                if (depotKey == null)
+                {
+                    Console.WriteLine($"Warning: No key found for depot {depotId}. Proceeding without key (depot might be unencrypted).");
+                }
+
+                KeyValue depotConfig = KeyValue.Invalid;
+                if (depots != null && depots[depotId.ToString()] != KeyValue.Invalid)
+                {
+                    depotConfig = depots[depotId.ToString()]["config"];
+                }
+
+                if (depotConfig != KeyValue.Invalid)
+                {
+                    if (!Config.DownloadAllPlatforms &&
+                        depotConfig["oslist"] != KeyValue.Invalid &&
+                        !string.IsNullOrWhiteSpace(depotConfig["oslist"].Value))
+                    {
+                        var oslist = depotConfig["oslist"].Value.Split(',');
+                        if (Array.IndexOf(oslist, os ?? Util.GetSteamOS()) == -1)
+                            continue;
+                    }
+
+                    if (!Config.DownloadAllArchs &&
+                        depotConfig["osarch"] != KeyValue.Invalid &&
+                        !string.IsNullOrWhiteSpace(depotConfig["osarch"].Value))
+                    {
+                        var depotArch = depotConfig["osarch"].Value;
+                        if (depotArch != (arch ?? Util.GetSteamArch()))
+                            continue;
+                    }
+
+                    if (!Config.DownloadAllLanguages &&
+                        depotConfig["language"] != KeyValue.Invalid &&
+                        !string.IsNullOrWhiteSpace(depotConfig["language"].Value))
+                    {
+                        var depotLang = depotConfig["language"].Value;
+                        if (depotLang != (language ?? "english"))
+                            continue;
+                    }
+
+                    if (!lv &&
+                        depotConfig["lowviolence"] != KeyValue.Invalid &&
+                        depotConfig["lowviolence"].AsBoolean())
+                        continue;
+                }
+
+                if (!CreateDirectories(appId, depotId, targetBuildIdNum, branch, null, depotConfig, out var installDir))
+                {
+                    Console.WriteLine($"Failed to create directories for depot {depotId}");
+                    continue;
+                }
+
+                var configDir = Path.Combine(installDir, CONFIG_DIR);
+                var destManifest = Path.Combine(configDir, Path.GetFileName(manifestPath));
+                File.Copy(manifestPath, destManifest, true);
+
+                var shaPath = manifestPath + ".sha";
+                if (File.Exists(shaPath))
+                {
+                    File.Copy(shaPath, destManifest + ".sha", true);
+                }
+
+                var containingAppId = appId;
+                var proxyAppId = GetSteam3DepotProxyAppId(depotId, appId);
+                if (proxyAppId != INVALID_APP_ID)
+                {
+                    var common = GetSteam3AppSection(appId, EAppInfoSection.Common);
+                    if (common == null || !common["FreeToDownload"].AsBoolean())
+                    {
+                        containingAppId = proxyAppId;
+                        Console.WriteLine($"depotfromapp found. Redirecting depot {depotId} to app {containingAppId}");
+                    }
+                }
+
+                infos.Add(new DepotDownloadInfo(depotId, containingAppId, manifestId, branch, installDir, depotKey));
+            }
+
+            Console.WriteLine($"Restoring {infos.Count} depots...");
+            try
+            {
+                await DownloadSteam3Async(infos).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Restore failed: {ex.Message}");
+                throw;
+            }
+
+            if (includeDlc)
+            {
+                var extendedInfo = GetSteam3AppSection(appId, EAppInfoSection.Extended);
+                if (extendedInfo != null && extendedInfo["listofdlc"] != KeyValue.Invalid)
+                {
+                    Console.WriteLine($"{appId} returned the following DLCs: {extendedInfo["listofdlc"].Value}");
+                    var dlcString = extendedInfo["listofdlc"].Value;
+                    if (!string.IsNullOrEmpty(dlcString))
+                    {
+                        var dlcAppIds = dlcString.Split(',').Select(uint.Parse).ToList();
+                        var mainAppDepots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+
+                        foreach (var dlcAppId in dlcAppIds)
+                        {
+                            try
+                            {
+                                if (mainAppDepots != null && mainAppDepots[dlcAppId.ToString()] != KeyValue.Invalid)
+                                {
+                                    Console.WriteLine($"DLC {dlcAppId} is included in main app {appId}, skipping separate restore...");
+                                    continue;
+                                }
+
+                                Console.WriteLine($"Found DLC {dlcAppId}, restoring...");
+                                // DLCs have their own build IDs, so we can't use the main app's build ID.
+                                // We'll restore the latest backup for the DLC instead (following IsBackupCompatible logic).
+                                await RestoreAppAsync(dlcAppId, null, branch, os, arch, language, lv, includeDlc);
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine($"Failed to restore DLC {dlcAppId}: {e.Message}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         public static async Task DownloadAppAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc, bool includeDlc = false, uint? parentAppId = null)
         {
             cdnPool = new CDNClientPool(steam3, appId);
@@ -567,7 +1135,7 @@ namespace DepotDownloader
             Directory.CreateDirectory(Path.Combine(configPath, CONFIG_DIR));
             if (DepotConfigStore.Instance == null)
             {
-                DepotConfigStore.LoadFromFile(Path.Combine(configPath, CONFIG_DIR, "depot.config"));
+                DepotConfigStore.LoadFromFile(Path.Combine(configPath, CONFIG_DIR, DEPOT_CONFIG_FILE));
             }
 
             await steam3?.RequestAppInfo(appId);
@@ -591,6 +1159,11 @@ namespace DepotDownloader
             if (Config.DownloadAllBranches && branch == null)
             {
                 var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+                if (depots == null)
+                {
+                    throw new ContentDownloaderException($"Couldn't find any depots to download for app {appId}");
+                }
+
                 var branches = depots["branches"];
 
                 foreach (var branchChild in branches.Children)
@@ -922,6 +1495,11 @@ namespace DepotDownloader
 
             Ansi.Progress(Ansi.ProgressState.Hidden);
 
+            if (Config.MinimalOutput)
+            {
+                Console.WriteLine();
+            }
+
             Console.WriteLine("Total downloaded: {0} bytes ({1} bytes uncompressed) from {2} depots",
                 downloadCounter.totalBytesCompressed, downloadCounter.totalBytesUncompressed, depots.Count);
         }
@@ -1083,7 +1661,7 @@ namespace DepotDownloader
 
             if (newManifest != null && Config.BackupManifests)
             {
-                var backupDir = Path.Combine("manifest_backups", depot.AppId.ToString());
+                var backupDir = Path.Combine(GetManifestBaseDirectory(), depot.AppId.ToString());
 
                 var buildId = GetSteam3AppBuildNumber(depot.AppId, depot.Branch);
                 if (buildId != 0)
@@ -1204,7 +1782,10 @@ namespace DepotDownloader
                         continue;
 
                     File.Delete(fileFinalPath);
-                    Console.WriteLine("Deleted {0}", fileFinalPath);
+                    if (!Config.MinimalOutput)
+                    {
+                        Console.WriteLine("Deleted {0}", fileFinalPath);
+                    }
                 }
             }
 
@@ -1247,7 +1828,10 @@ namespace DepotDownloader
             var fileDidExist = fi.Exists;
             if (!fileDidExist)
             {
-                Console.WriteLine("Pre-allocating {0}", fileFinalPath);
+                if (!Config.MinimalOutput)
+                {
+                    Console.WriteLine("Pre-allocating {0}", fileFinalPath);
+                }
 
                 // create new file. need all chunks
                 using var fs = File.Create(fileFinalPath);
@@ -1273,7 +1857,7 @@ namespace DepotDownloader
                     if (Config.VerifyAll || !hashMatches)
                     {
                         // we have a version of this file, but it doesn't fully match what we want
-                        if (Config.VerifyAll)
+                        if (Config.VerifyAll && !Config.MinimalOutput)
                         {
                             Console.WriteLine("Validating {0}", fileFinalPath);
                         }
@@ -1363,8 +1947,10 @@ namespace DepotDownloader
                             throw new ContentDownloaderException(string.Format("Failed to allocate file {0}: {1}", fileFinalPath, ex.Message));
                         }
                     }
-
-                    Console.WriteLine("Validating {0}", fileFinalPath);
+                    if (!Config.MinimalOutput)
+                    {
+                        Console.WriteLine("Validating {0}", fileFinalPath);
+                    }
                     neededChunks = Util.ValidateSteam3FileChecksums(fs, [.. file.Chunks.OrderBy(x => x.Offset)]);
                 }
 
@@ -1373,7 +1959,10 @@ namespace DepotDownloader
                     lock (depotDownloadCounter)
                     {
                         depotDownloadCounter.sizeDownloaded += file.TotalSize;
-                        Console.WriteLine("{0,6:#00.00}% {1}", (depotDownloadCounter.sizeDownloaded / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);
+                        if (!Config.MinimalOutput)
+                        {
+                            Console.WriteLine("{0,6:#00.00}% {1}", (depotDownloadCounter.sizeDownloaded / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);
+                        }
                     }
 
                     lock (downloadCounter)
@@ -1564,12 +2153,21 @@ namespace DepotDownloader
                 downloadCounter.totalBytesUncompressed += chunk.UncompressedLength;
 
                 Ansi.Progress(downloadCounter.totalBytesUncompressed, downloadCounter.completeDownloadSize);
+
+                if (Config.MinimalOutput)
+                {
+                    var percent = (downloadCounter.totalBytesUncompressed / (float)downloadCounter.completeDownloadSize) * 100.0f;
+                    Console.Write($"\r{percent,6:00.00}%");
+                }
             }
 
             if (remainingChunks == 0)
             {
-                var fileFinalPath = Path.Combine(depot.InstallDir, file.FileName);
-                Console.WriteLine("{0,6:#00.00}% {1}", (sizeDownloaded / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);
+                if (!Config.MinimalOutput)
+                {
+                    var fileFinalPath = Path.Combine(depot.InstallDir, file.FileName);
+                    Console.WriteLine("{0,6:#00.00}% {1}", (sizeDownloaded / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);
+                }
             }
         }
 
@@ -1639,7 +2237,7 @@ namespace DepotDownloader
             var buildId = GetSteam3AppBuildNumber(appId, branch);
             var buildIdStr = buildId != 0 ? buildId.ToString() : appInfo.ChangeNumber.ToString();
 
-            var backupDir = Path.Combine("manifest_backups", appId.ToString(), buildIdStr);
+            var backupDir = Path.Combine(GetManifestBaseDirectory(), appId.ToString(), buildIdStr);
 
             Directory.CreateDirectory(backupDir);
             SaveAppInfoAsJson(appId, backupDir);
@@ -1724,6 +2322,71 @@ namespace DepotDownloader
             return JsonValue.Create(kv.Value);
         }
 
+        static KeyValue JsonToKeyValue(string name, JsonNode node)
+        {
+            var kv = new KeyValue(name);
+
+            if (node is JsonObject obj)
+            {
+                foreach (var property in obj)
+                {
+                    kv.Children.Add(JsonToKeyValue(property.Key, property.Value));
+                }
+            }
+            else if (node is JsonValue val)
+            {
+                kv.Value = val.ToString();
+            }
+
+            return kv;
+        }
+
+        static SteamApps.PICSProductInfoCallback.PICSProductInfo CreatePICSProductInfo(uint id, KeyValue kv, bool missingToken, uint changeNumber, byte[] sha)
+        {
+            var type = typeof(SteamApps.PICSProductInfoCallback.PICSProductInfo);
+            var instance = (SteamApps.PICSProductInfoCallback.PICSProductInfo)RuntimeHelpers.GetUninitializedObject(type);
+
+            void SetProp(string name, object value)
+            {
+                var prop = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (prop != null && prop.CanWrite)
+                {
+                    prop.SetValue(instance, value);
+                }
+                else
+                {
+                    var field = type.GetField($"<{name}>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (field != null)
+                    {
+                        field.SetValue(instance, value);
+                    }
+                    else
+                    {
+                        // Try to find the field by name convention (lowercase or underscore prefix) if backing field not found
+                        field = type.GetField(name, BindingFlags.NonPublic | BindingFlags.Instance) ??
+                                type.GetField($"_{name}", BindingFlags.NonPublic | BindingFlags.Instance);
+
+                        if (field != null)
+                        {
+                            field.SetValue(instance, value);
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Warning: Failed to set property '{name}' on PICSProductInfo via reflection.");
+                        }
+                    }
+                }
+            }
+
+            SetProp("ID", id);
+            SetProp("KeyValues", kv);
+            SetProp("MissingToken", missingToken);
+            SetProp("ChangeNumber", changeNumber);
+            SetProp("SHAHash", sha);
+
+            return instance;
+        }
+
         static void SaveLuaScript(uint appId, List<DepotDownloadInfo> depots, string backupDir)
         {
             var path = Path.Combine(backupDir, $"{appId}.lua");
@@ -1732,6 +2395,11 @@ namespace DepotDownloader
             var sb = new System.Text.StringBuilder();
             sb.AppendLine($"addappid({appId})");
 
+            if (steam3 != null && steam3.AppTokens.TryGetValue(appId, out var appToken))
+            {
+                sb.AppendLine($"addtoken({appId},\"{appToken}\")");
+            }
+
             foreach (var depot in depots)
             {
                 if (depot.DepotKey != null)
@@ -1739,6 +2407,12 @@ namespace DepotDownloader
                     var keyStr = Convert.ToHexString(depot.DepotKey).ToLowerInvariant();
                     sb.AppendLine($"addappid({depot.DepotId},0,\"{keyStr}\")");
                 }
+
+                if (steam3 != null && steam3.AppTokens.TryGetValue(depot.DepotId, out var depotToken))
+                {
+                    sb.AppendLine($"addtoken({depot.DepotId},\"{depotToken}\")");
+                }
+
                 if (depot.ManifestId != INVALID_MANIFEST_ID)
                 {
                     sb.AppendLine($"setManifestid({depot.DepotId},\"{depot.ManifestId}\")");
@@ -1746,6 +2420,45 @@ namespace DepotDownloader
             }
 
             File.WriteAllText(path, sb.ToString());
+        }
+
+        static Dictionary<uint, byte[]> LoadLuaKeys(string luaPath)
+        {
+            var keys = new Dictionary<uint, byte[]>();
+            if (!File.Exists(luaPath)) return keys;
+
+            try
+            {
+                var lines = File.ReadAllLines(luaPath);
+                foreach (var line in lines)
+                {
+                    // Format: addappid(depotId,0,"key")
+                    // Example: addappid(228983,0,"77c8e812cd79e67e2d376721253ebb07e06b3646f05671c6c9517b27be14734b")
+
+                    var trimmed = line.Trim();
+                    if (!trimmed.StartsWith("addappid")) continue;
+
+                    var parts = trimmed.Split(new[] { '(', ')', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 4 && parts[0] == "addappid")
+                    {
+                        if (uint.TryParse(parts[1], out var depotId))
+                        {
+                            // parts[2] is usually 0
+                            var keyStr = parts[3].Trim('"');
+                            if (!string.IsNullOrEmpty(keyStr) && keyStr.Length == 64) // Basic validation for hex key
+                            {
+                                keys[depotId] = Util.DecodeHexString(keyStr);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Failed to parse lua file {luaPath}: {ex.Message}");
+            }
+
+            return keys;
         }
 
         static void SaveKeyVdf(List<DepotDownloadInfo> depots, string backupDir)
@@ -1773,6 +2486,84 @@ namespace DepotDownloader
             File.WriteAllText(path, sb.ToString());
         }
 
+        static async Task<uint?> IdentifyBuildFromDirectory(string dir, uint appId)
+        {
+            var manifestFiles = Directory.GetFiles(dir, "*.manifest");
+            var localManifests = new List<(uint DepotId, ulong ManifestId)>();
+            foreach (var file in manifestFiles)
+            {
+                var fileName = Path.GetFileNameWithoutExtension(file);
+                var parts = fileName.Split('_');
+                if (parts.Length >= 2 && uint.TryParse(parts[0], out var dId) && ulong.TryParse(parts[1], out var mId))
+                {
+                    localManifests.Add((dId, mId));
+                }
+            }
+
+            var appInfoPath = Path.Combine(dir, $"{appId}.json");
+            if (!File.Exists(appInfoPath)) return null;
+
+            try
+            {
+                var jsonString = await File.ReadAllTextAsync(appInfoPath);
+                var jsonNode = JsonNode.Parse(jsonString);
+                var depotsNode = jsonNode["depots"] ?? jsonNode["depot"];
+                if (depotsNode == null) return null;
+
+                var branchesNode = depotsNode["branches"];
+                if (branchesNode == null) return null;
+
+                foreach (var child in branchesNode.AsObject())
+                {
+                    var branchName = child.Key;
+                    var branchData = child.Value;
+                    var buildIdNode = branchData["buildid"];
+                    if (buildIdNode == null) continue;
+
+                    if (!uint.TryParse(buildIdNode.ToString(), out var buildId)) continue;
+
+                    bool branchMatches = true;
+                    int matchCount = 0;
+
+                    foreach (var local in localManifests)
+                    {
+                        var depotNode = depotsNode[local.DepotId.ToString()];
+                        if (depotNode == null) continue;
+
+                        var manifestsNode = depotNode["manifests"];
+                        if (manifestsNode == null) continue;
+
+                        var branchNode = manifestsNode[branchName];
+                        if (branchNode == null) continue;
+
+                        var gidNode = branchNode["gid"];
+                        if (gidNode == null) continue;
+
+                        if (ulong.TryParse(gidNode.ToString(), out var remoteManifestId))
+                        {
+                            if (remoteManifestId == local.ManifestId)
+                            {
+                                matchCount++;
+                            }
+                            else
+                            {
+                                branchMatches = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (branchMatches && matchCount > 0)
+                    {
+                        return buildId;
+                    }
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
         static void SaveAppTokens(string backupDir, Dictionary<uint, ulong> appTokens)
         {
             if (appTokens == null || appTokens.Count == 0)
@@ -1789,6 +2580,62 @@ namespace DepotDownloader
 
             var jsonString = obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true, IndentSize = 4 });
             File.WriteAllText(path, jsonString);
+        }
+
+        // Tries to find the greatest buildID that's compatible with the system config if buildID is not present in args
+        static bool IsBackupCompatible(string backupDir, string os, string arch, JsonNode depotsNode)
+        {
+            if (depotsNode == null) return true;
+
+            var manifestFiles = Directory.GetFiles(backupDir, "*.manifest");
+            bool hasDepots = false;
+            bool hasCompatibleDepot = false;
+
+            foreach (var file in manifestFiles)
+            {
+                var fileName = Path.GetFileNameWithoutExtension(file);
+                var parts = fileName.Split('_');
+                if (parts.Length >= 2 && uint.TryParse(parts[0], out var depotId))
+                {
+                    hasDepots = true;
+                    var depotNode = depotsNode[depotId.ToString()];
+                    if (depotNode != null)
+                    {
+                        var config = depotNode["config"];
+                        if (config != null)
+                        {
+                            var oslist = config["oslist"]?.ToString();
+                            if (!string.IsNullOrEmpty(oslist))
+                            {
+                                var oses = oslist.Split(',');
+                                if (Array.IndexOf(oses, os) == -1)
+                                {
+                                    if (DebugLog.Enabled) Console.WriteLine($"Depot {depotId} incompatible: oslist '{oslist}' does not contain '{os}'");
+                                    continue;
+                                }
+                            }
+
+                            var osarch = config["osarch"]?.ToString();
+                            if (!string.IsNullOrEmpty(osarch))
+                            {
+                                if (osarch != arch)
+                                {
+                                    if (DebugLog.Enabled) Console.WriteLine($"Depot {depotId} incompatible: osarch '{osarch}' does not match '{arch}'");
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    // If we reached here, the depot is compatible (or has no restrictions)
+                    if (DebugLog.Enabled) Console.WriteLine($"Depot {depotId} is compatible with {os}/{arch}");
+                    hasCompatibleDepot = true;
+                    break;
+                }
+            }
+
+            if (!hasDepots) return true;
+            return hasCompatibleDepot;
         }
     }
 }

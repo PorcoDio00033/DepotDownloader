@@ -120,7 +120,7 @@ cryptopp/
 Thumbs.db
 launchSettings.json
 
-depots/
-manifest_backups/
-plans/
-test-output/
+depots*/
+manifest_backups*/
+plans*/
+test-output*/
