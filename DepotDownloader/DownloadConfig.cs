@@ -37,6 +37,7 @@ namespace DepotDownloader
         public string BackupDirectory { get; set; }
         public bool IncludeDLCs { get; set; }
         public string LoginToken { get; set; }
+        public bool TokenLacksClientScope { get; set; }
         public bool RestoreBackup { get; set; }
         public string RestoreBuildId { get; set; }
         public bool MinimalOutput { get; set; }

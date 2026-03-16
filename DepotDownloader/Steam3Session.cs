@@ -443,6 +443,48 @@ namespace DepotDownloader
                     Console.WriteLine("Logging into Steam3 with access token...");
                 }
 
+                if (ContentDownloader.Config.TokenLacksClientScope && logonDetails.AccessToken != null)
+                {
+                    Console.WriteLine("Refresh token lacks 'client' scope. Fetching WebLogonToken...");
+                    try
+                    {
+                        var webLogonResult = await GetWebLogonTokenAsync(logonDetails.AccessToken);
+
+                        if (logonDetails.Username == null && !string.IsNullOrEmpty(webLogonResult.AccountName))
+                        {
+                            logonDetails.Username = webLogonResult.AccountName;
+                            Console.WriteLine($"Fetched username from WebLogonToken: {logonDetails.Username}");
+                        }
+
+                        var logon = new ClientMsgProtobuf<CMsgClientLogon>(EMsg.ClientLogon);
+                        var steamId = new SteamID(ulong.Parse(Util.DecodeJwtPayload(logonDetails.AccessToken)["sub"].ToString()));
+
+                        logon.ProtoHeader.client_sessionid = 0;
+                        logon.ProtoHeader.steamid = steamId.ConvertToUInt64();
+
+                        logon.Body.web_logon_nonce = webLogonResult.Token;
+                        logon.Body.protocol_version = MsgClientLogon.CurrentProtocol;
+                        logon.Body.client_os_type = 4294966596;
+                        logon.Body.ui_mode = 4;
+                        logon.Body.client_language = "english";
+                        logon.Body.cell_id = ContentDownloader.Config.CellID == 0 ? steamClient.Configuration.CellID : (uint)ContentDownloader.Config.CellID;
+
+                        if (logonDetails.Username != null)
+                        {
+                            logon.Body.account_name = logonDetails.Username;
+                        }
+
+                        steamClient.Send(logon);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine("Failed to fetch WebLogonToken: " + ex.Message);
+                        Abort(false);
+                        return;
+                    }
+                }
+
                 if (authSession is null)
                 {
                     if (logonDetails.Username != null && logonDetails.Password != null && logonDetails.AccessToken is null)
@@ -722,6 +764,98 @@ namespace DepotDownloader
             {
                 Console.WriteLine(line);
             }
+        }
+
+        private async Task<(string Token, string AccountName)> GetWebLogonTokenAsync(string refreshToken)
+        {
+            var payload = Util.DecodeJwtPayload(refreshToken);
+            var steamIdStr = payload?["sub"]?.ToString();
+            if (steamIdStr == null)
+            {
+                throw new Exception("Invalid refresh token: missing 'sub' claim.");
+            }
+
+            var steamId = new SteamID(ulong.Parse(steamIdStr));
+
+            var cookieContainer = new System.Net.CookieContainer();
+            using var handler = new System.Net.Http.HttpClientHandler { CookieContainer = cookieContainer };
+            using var httpClient = new System.Net.Http.HttpClient(handler);
+
+            httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36");
+            httpClient.DefaultRequestHeaders.Add("Origin", "https://steamcommunity.com");
+            httpClient.DefaultRequestHeaders.Add("Referer", "https://steamcommunity.com/");
+            httpClient.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
+            httpClient.DefaultRequestHeaders.Add("sec-fetch-site", "cross-site");
+            httpClient.DefaultRequestHeaders.Add("sec-fetch-mode", "cors");
+            httpClient.DefaultRequestHeaders.Add("sec-fetch-dest", "empty");
+
+            var sessionId = Guid.NewGuid().ToString("N").Substring(0, 24);
+
+            var finalizeContent = new System.Net.Http.FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("nonce", refreshToken),
+                new KeyValuePair<string, string>("sessionid", sessionId),
+                new KeyValuePair<string, string>("redir", "https://steamcommunity.com/login/home/?goto=")
+            });
+
+            var finalizeResponse = await httpClient.PostAsync("https://login.steampowered.com/jwt/finalizelogin", finalizeContent);
+            finalizeResponse.EnsureSuccessStatusCode();
+
+            var finalizeJson = await finalizeResponse.Content.ReadAsStringAsync();
+            var finalizeNode = System.Text.Json.Nodes.JsonNode.Parse(finalizeJson);
+
+            if (finalizeNode?["error"] != null)
+            {
+                throw new Exception($"Login failed: {finalizeNode["error"]}");
+            }
+
+            var transferInfo = finalizeNode?["transfer_info"]?.AsArray();
+            if (transferInfo != null)
+            {
+                foreach (var transfer in transferInfo)
+                {
+                    var url = transfer["url"]?.ToString();
+                    var paramsNode = transfer["params"]?.AsObject();
+
+                    if (url != null && paramsNode != null)
+                    {
+                        var transferData = new List<KeyValuePair<string, string>>
+                        {
+                            new KeyValuePair<string, string>("steamID", steamId.ConvertToUInt64().ToString())
+                        };
+
+                        foreach (var param in paramsNode)
+                        {
+                            transferData.Add(new KeyValuePair<string, string>(param.Key, param.Value?.ToString()));
+                        }
+
+                        var transferContent = new System.Net.Http.FormUrlEncodedContent(transferData);
+                        var transferRes = await httpClient.PostAsync(url, transferContent);
+                        transferRes.EnsureSuccessStatusCode();
+                    }
+                }
+            }
+
+            // Manually set sessionid cookie for steamcommunity.com just in case
+            cookieContainer.Add(new Uri("https://steamcommunity.com"), new System.Net.Cookie("sessionid", sessionId));
+            cookieContainer.Add(new Uri("https://store.steampowered.com"), new System.Net.Cookie("sessionid", sessionId));
+            cookieContainer.Add(new Uri("https://help.steampowered.com"), new System.Net.Cookie("sessionid", sessionId));
+
+            var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, "https://steamcommunity.com/chat/clientjstoken");
+            var response = await httpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            var jsonString = await response.Content.ReadAsStringAsync();
+            var jsonNode = System.Text.Json.Nodes.JsonNode.Parse(jsonString);
+
+            var token = jsonNode?["token"]?.ToString();
+            var accountName = jsonNode?["account_name"]?.ToString();
+            if (string.IsNullOrEmpty(token))
+            {
+                throw new Exception($"Failed to get WebLogonToken from response. Response: {jsonString}");
+            }
+
+            return (token, accountName);
         }
     }
 }

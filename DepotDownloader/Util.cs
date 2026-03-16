@@ -8,6 +8,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using SteamKit2;
 
@@ -234,6 +235,34 @@ namespace DepotDownloader
             var output = aesTransform.TransformFinalBlock(input, 0, input.Length);
 
             return output;
+        }
+        public static JsonNode DecodeJwtPayload(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return null;
+
+            var parts = token.Split('.');
+            if (parts.Length != 3)
+                return null;
+
+            var payload = parts[1];
+            payload = payload.Replace('-', '+').Replace('_', '/');
+            switch (payload.Length % 4)
+            {
+                case 2: payload += "=="; break;
+                case 3: payload += "="; break;
+            }
+
+            try
+            {
+                var jsonBytes = Convert.FromBase64String(payload);
+                var jsonString = Encoding.UTF8.GetString(jsonBytes);
+                return JsonNode.Parse(jsonString);
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 }

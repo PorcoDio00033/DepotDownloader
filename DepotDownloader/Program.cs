@@ -9,6 +9,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using SteamKit2;
 using SteamKit2.CDN;
@@ -67,18 +68,83 @@ namespace DepotDownloader
             var username = GetParameter<string>(args, "-username") ?? GetParameter<string>(args, "-user");
             var password = GetParameter<string>(args, "-password") ?? GetParameter<string>(args, "-pass");
             ContentDownloader.Config.LoginToken = GetParameter<string>(args, "-token") ?? GetParameter<string>(args, "-login-token");
+
+            if (ContentDownloader.Config.LoginToken != null)
+            {
+                var payload = Util.DecodeJwtPayload(ContentDownloader.Config.LoginToken);
+                if (payload != null)
+                {
+                    var audNode = payload["aud"];
+                    var audList = new List<string>();
+                    if (audNode is JsonArray audArray)
+                    {
+                        foreach (var item in audArray)
+                        {
+                            audList.Add(item.ToString());
+                        }
+                    }
+                    else if (audNode != null)
+                    {
+                        audList.Add(audNode.ToString());
+                    }
+
+                    if (!audList.Contains("renew"))
+                    {
+                        Console.WriteLine("Error: The provided token does not contain the 'renew' scope.");
+                        return 1;
+                    }
+
+                    if (!audList.Contains("client"))
+                    {
+                        if (!audList.Contains("web"))
+                        {
+                            Console.WriteLine("Error: The provided token lacks both 'client' and 'web' scopes. It cannot be used for authentication.");
+                            return 1;
+                        }
+                        ContentDownloader.Config.TokenLacksClientScope = true;
+                    }
+
+                    var ip = payload["ip_subject"]?.ToString() ?? payload["ip_confirmer"]?.ToString();
+                    if (ip != null)
+                    {
+                        Console.WriteLine($"Token IP: {ip}");
+                        try
+                        {
+                            using var httpClient = new System.Net.Http.HttpClient();
+                            var response = await httpClient.GetStringAsync($"http://ip-api.com/json/{ip}");
+                            var ipInfo = JsonNode.Parse(response);
+                            var countryCode = ipInfo?["countryCode"]?.ToString();
+                            if (countryCode != null)
+                            {
+                                Console.WriteLine("\n!!! IMPORTANT !!!");
+                                Console.WriteLine($"This token is associated with country: {countryCode}");
+                                Console.WriteLine($"Please ensure you are connected to a VPN/Proxy in {countryCode} before proceeding.");
+
+                                if (!Console.IsInputRedirected)
+                                {
+                                    Console.WriteLine("Press Enter to continue once connected...");
+                                    Console.ReadLine();
+                                }
+                                else
+                                {
+                                    Console.WriteLine("Input is redirected, skipping wait for Enter key.");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Warning: Failed to extract IP/country from refresh token: {ex.Message}");
+                        }
+                    }
+                }
+            }
+
             ContentDownloader.Config.RememberPassword = HasParameter(args, "-remember-password");
             ContentDownloader.Config.UseQrCode = HasParameter(args, "-qr");
             ContentDownloader.Config.SkipAppConfirmation = HasParameter(args, "-no-mobile");
 
             if (username == null)
             {
-                if (ContentDownloader.Config.LoginToken != null)
-                {
-                    Console.WriteLine("Error: -token requires -username to be specified.");
-                    return 1;
-                }
-
                 if (ContentDownloader.Config.RememberPassword && !ContentDownloader.Config.UseQrCode)
                 {
                     Console.WriteLine("Error: -remember-password can not be used without -username or -qr.");
@@ -560,7 +626,7 @@ namespace DepotDownloader
             Console.WriteLine();
             Console.WriteLine("  -username <user>         - the username of the account to login to for restricted content.");
             Console.WriteLine("  -password <pass>         - the password of the account to login to for restricted content.");
-            Console.WriteLine("  -token <token>           - the refresh token of the account to login to for restricted content (requires -username).");
+            Console.WriteLine("  -token <token>           - the refresh token of the account to login to for restricted content.");
             Console.WriteLine("  -remember-password       - if set, remember the password for subsequent logins of this user.");
             Console.WriteLine("                             use -username <username> -remember-password as login credentials.");
             Console.WriteLine("  -qr                      - display a login QR code to be scanned with the Steam mobile app");
