@@ -302,6 +302,9 @@ namespace DepotDownloader
 
 
             var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+            if (depots == null)
+                return 0;
+
             var branches = depots["branches"];
             var node = branches[branch];
 
@@ -319,6 +322,9 @@ namespace DepotDownloader
         static uint GetSteam3DepotProxyAppId(uint depotId, uint appId)
         {
             var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+            if (depots == null)
+                return INVALID_APP_ID;
+
             var depotChild = depots[depotId.ToString()];
 
             if (depotChild == KeyValue.Invalid)
@@ -333,6 +339,9 @@ namespace DepotDownloader
         static async Task<ulong> GetSteam3DepotManifest(uint depotId, uint appId, string branch)
         {
             var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+            if (depots == null)
+                return INVALID_MANIFEST_ID;
+
             var depotChild = depots[depotId.ToString()];
 
             if (depotChild == KeyValue.Invalid)
@@ -1386,7 +1395,7 @@ namespace DepotDownloader
                 return null;
             }
 
-            var uVersion = GetSteam3AppBuildNumber(appId, branch);
+            var uVersion = Config.ForceBuildId ?? GetSteam3AppBuildNumber(appId, branch);
 
             if (!CreateDirectories(appId, depotId, uVersion, branch, parentAppId, depotConfig, out var installDir))
             {
@@ -1663,7 +1672,7 @@ namespace DepotDownloader
             {
                 var backupDir = Path.Combine(GetManifestBaseDirectory(), depot.AppId.ToString());
 
-                var buildId = GetSteam3AppBuildNumber(depot.AppId, depot.Branch);
+                var buildId = Config.ForceBuildId ?? GetSteam3AppBuildNumber(depot.AppId, depot.Branch);
                 if (buildId != 0)
                 {
                     backupDir = Path.Combine(backupDir, buildId.ToString());
@@ -2234,13 +2243,13 @@ namespace DepotDownloader
                 return;
             }
 
-            var buildId = GetSteam3AppBuildNumber(appId, branch);
+            var buildId = Config.ForceBuildId ?? GetSteam3AppBuildNumber(appId, branch);
             var buildIdStr = buildId != 0 ? buildId.ToString() : appInfo.ChangeNumber.ToString();
 
             var backupDir = Path.Combine(GetManifestBaseDirectory(), appId.ToString(), buildIdStr);
 
             Directory.CreateDirectory(backupDir);
-            SaveAppInfoAsJson(appId, backupDir);
+            SaveAppInfoAsJson(appId, backupDir, depots, branch);
             SaveLuaScript(appId, depots, backupDir);
             SaveKeyVdf(depots, backupDir);
             SaveAppTokens(backupDir, steam3.AppTokens);
@@ -2248,7 +2257,7 @@ namespace DepotDownloader
             Console.WriteLine("Backup created in {0}", backupDir);
         }
 
-        static void SaveAppInfoAsJson(uint appId, string backupDir)
+        static void SaveAppInfoAsJson(uint appId, string backupDir, List<DepotDownloadInfo> depots, string branch)
         {
             if (steam3 == null || !steam3.AppInfo.TryGetValue(appId, out var appInfo) || appInfo == null)
             {
@@ -2279,6 +2288,53 @@ namespace DepotDownloader
                             {
                                 depotNode["decryptionkey"] = Convert.ToHexString(kvp.Value).ToLowerInvariant();
                             }
+                        }
+                    }
+
+                    // Patch manifest IDs
+                    foreach (var depot in depots)
+                    {
+                        if (depot.ManifestId != INVALID_MANIFEST_ID)
+                        {
+                            var depotIdStr = depot.DepotId.ToString();
+                            if (depotsNode[depotIdStr] is JsonObject depotNode)
+                            {
+                                if (depotNode["manifests"] is JsonObject manifestsNode)
+                                {
+                                    if (manifestsNode[branch] is JsonObject branchNode)
+                                    {
+                                        branchNode["gid"] = depot.ManifestId.ToString();
+                                    }
+                                    else
+                                    {
+                                        manifestsNode[branch] = new JsonObject { ["gid"] = depot.ManifestId.ToString() };
+                                    }
+                                }
+                                else
+                                {
+                                    depotNode["manifests"] = new JsonObject { [branch] = new JsonObject { ["gid"] = depot.ManifestId.ToString() } };
+                                }
+                            }
+                        }
+                    }
+
+                    // Patch build ID
+                    if (Config.ForceBuildId.HasValue)
+                    {
+                        if (depotsNode["branches"] is JsonObject branchesNode)
+                        {
+                            if (branchesNode[branch] is JsonObject branchNode)
+                            {
+                                branchNode["buildid"] = Config.ForceBuildId.Value.ToString();
+                            }
+                            else
+                            {
+                                branchesNode[branch] = new JsonObject { ["buildid"] = Config.ForceBuildId.Value.ToString() };
+                            }
+                        }
+                        else
+                        {
+                            depotsNode["branches"] = new JsonObject { [branch] = new JsonObject { ["buildid"] = Config.ForceBuildId.Value.ToString() } };
                         }
                     }
                 }

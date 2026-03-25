@@ -56,8 +56,8 @@ For example: `./DepotDownloader -app 730 -ugc 770604181014286929`
 
 **Restore game from metadata backup:**
 ```powershell
-# To target a specific buildID, add one after -restore-backup
-# If buildID is not specified, it will pick the higher one filtered by system compatibility info
+# To target a specific buildID, use the -buildid parameter
+# If -buildid is not specified, it will pick the higher one filtered by system compatibility info
 ./DepotDownloader -app 1091500 -restore-backup -include-dlc -all-languages -validate -dir "output/{GameName}/{BuildID}" -backup-dir "backups" 
 ```
 
@@ -82,6 +82,7 @@ Parameter                | Description
 `-app <#>`               | the AppID to download.
 `-depot <#>`             | the DepotID to download.
 `-manifest <id>`         | manifest id of content to download (requires `-depot`, default: current for branch).
+`-buildid <id>`          | build id of the content to download (useful for backing up older manifests).
 `-ugc <#>`               | the UGC ID to download.
 `-pubfile <#>`           | the PublishedFileId to download. (Will automatically resolve to UGC id)
 `-branch <branchname>`   | download from specified branch if available (default: Public).
@@ -110,7 +111,7 @@ Parameter               | Description
 `-use-lancache`         | forces downloads over the local network via a Lancache instance.
 `-backup-manifests`     | saves manifests and app info in a new `manifest_backups/{appId}/{buildid}/` dir.
 `-backup-dir <dir>`     | the directory in which to place/read backups (default: `manifest_backups` inside working directory). DOES NOT support path variables.
-`-restore-backup [<build_id>]` | restore from a backup. If `<build_id>` is not specified, the latest backup compatible with system config is used.
+`-restore-backup`       | restore from a backup. If `-buildid` is not specified, the latest backup compatible with system config is used.
 
 #### Other
 

@@ -12,7 +12,7 @@
 
 ## Pending Tasks
 
-- [ ] **Update README**: Reflect recent changes and new arguments in the documentation. Add credits and disclaimers.
+- [x] **Update README**: Reflect recent changes and new arguments in the documentation. Add credits and disclaimers.
 - [ ] **Refactor `RestoreAppAsync`**: Move logic to a separate file and restructure for better readability and maintainability.
 - [ ] **Add `-package-id` support**: 
     - Enable downloading collections of AppIDs (packages).
@@ -23,6 +23,6 @@
 - [ ] **Add `-all-licences` / `-all-apps`**: Fetch all licenses associated with an account instead of specifying a single AppID.
 - [ ] **Add Archive Support**: Implement basic 7z/gzip/zip archive support with splitting logic.
 - [ ] **Support Workshop UGC/Pubfile**: Extend `-backup-manifests` and `-restore-backup` to support Workshop content.
-- [ ] **Manual Backup of Older Manifests**: Add support for manually backing up older depot/manifest IDs and placing them in the correct backup directory.
+- [x] **Manual Backup of Older Manifests**: Add support for manually backing up older depot/manifest IDs and placing them in the correct backup directory.
     - Not sure if it can be done, maybe manifest info has all the details required already to construct {appId}.json
     - Example old manifest ids: https://steamdb.info/depot/1091501/manifests/
