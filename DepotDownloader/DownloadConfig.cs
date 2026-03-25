@@ -41,5 +41,6 @@ namespace DepotDownloader
         public bool RestoreBackup { get; set; }
         public bool MinimalOutput { get; set; }
         public uint? ForceBuildId { get; set; }
+        public bool ExcludeFreeApps { get; set; }
     }
 }

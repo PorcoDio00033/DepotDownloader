@@ -234,13 +234,16 @@ namespace DepotDownloader
             ContentDownloader.Config.BackupDirectory = GetParameter<string>(args, "-backup-dir");
             ContentDownloader.Config.IncludeDLCs = HasParameter(args, "-include-dlc");
             ContentDownloader.Config.MinimalOutput = HasParameter(args, "-minimal-output");
+            ContentDownloader.Config.ExcludeFreeApps = HasParameter(args, "-exclude-free");
 
             #endregion
 
             var appId = GetParameter(args, "-app", ContentDownloader.INVALID_APP_ID);
-            if (appId == ContentDownloader.INVALID_APP_ID)
+            var allApps = HasParameter(args, "-all-apps") || HasParameter(args, "-all-licenses");
+
+            if (appId == ContentDownloader.INVALID_APP_ID && !allApps)
             {
-                Console.WriteLine("Error: -app not specified!");
+                Console.WriteLine("Error: -app or -all-apps not specified!");
                 return 1;
             }
 
@@ -408,13 +411,56 @@ namespace DepotDownloader
                 {
                     try
                     {
-                        if (ContentDownloader.Config.RestoreBackup)
+                        if (allApps)
                         {
-                            await ContentDownloader.RestoreAppAsync(appId, ContentDownloader.Config.ForceBuildId?.ToString(), branch, os, arch, language, lv, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                            var appIds = await ContentDownloader.GetAllAccessibleAppIdsAsync();
+                            Console.WriteLine($"Found {appIds.Count} accessible apps.");
+                            if (appIds.Count > 0)
+                            {
+                                Console.WriteLine("Are you sure you want to download all of them? (y/n)");
+                                var response = Console.ReadLine();
+                                if (response?.Trim().ToLowerInvariant() != "y")
+                                {
+                                    Console.WriteLine("Aborting.");
+                                    return 0;
+                                }
+
+                                foreach (var id in appIds)
+                                {
+                                    try
+                                    {
+                                        if (ContentDownloader.Config.RestoreBackup)
+                                        {
+                                            await ContentDownloader.RestoreAppAsync(id, ContentDownloader.Config.ForceBuildId?.ToString(), branch, os, arch, language, lv, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                                        }
+                                        else
+                                        {
+                                            await ContentDownloader.DownloadAppAsync(id, new List<(uint, ulong)>(depotManifestIds), branch, os, arch, language, lv, isUGC, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                                        }
+                                    }
+                                    catch (Exception ex) when (
+                                        ex is ContentDownloaderException
+                                        || ex is OperationCanceledException)
+                                    {
+                                        Console.WriteLine($"Failed to download app {id}: {ex.Message}");
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine($"Download failed for app {id} due to an unhandled exception: {e.Message}");
+                                    }
+                                }
+                            }
                         }
                         else
                         {
-                            await ContentDownloader.DownloadAppAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUGC, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                            if (ContentDownloader.Config.RestoreBackup)
+                            {
+                                await ContentDownloader.RestoreAppAsync(appId, ContentDownloader.Config.ForceBuildId?.ToString(), branch, os, arch, language, lv, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await ContentDownloader.DownloadAppAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUGC, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                            }
                         }
                     }
                     catch (Exception ex) when (
@@ -599,6 +645,8 @@ namespace DepotDownloader
             Console.WriteLine();
             Console.WriteLine("Parameters:");
             Console.WriteLine("  -app <#>                 - the AppID to download.");
+            Console.WriteLine("  -all-apps                - (or -all-licenses) download all accessible apps for the logged in account.");
+            Console.WriteLine("  -exclude-free            - exclude free apps when using -all-apps.");
             Console.WriteLine("  -depot <#>               - the DepotID to download.");
             Console.WriteLine("  -manifest <id>           - manifest id of content to download (requires -depot, default: current for branch).");
             Console.WriteLine("  -buildid <id>            - build id of the content to download (useful for backing up older manifests).");

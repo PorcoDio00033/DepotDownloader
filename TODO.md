@@ -20,7 +20,7 @@
     - *Investigation needed*: Determine if it's better to fetch `packageId > depotIds` directly or `packageId > appIds > depotIds`.
     - What about bundles? Cyberpunk2077 has a bundle (but not a package) containing base game + DLC? https://steamdb.info/app/1091500/subs/
 - [ ] **Add path vars support to `-backup-dir`**: Currently it ignores path variables if provided.
-- [ ] **Add `-all-licences` / `-all-apps`**: Fetch all licenses associated with an account instead of specifying a single AppID.
+- [x] **Add `-all-licences` / `-all-apps`**: Fetch all licenses associated with an account instead of specifying a single AppID.
 - [ ] **Add Archive Support**: Implement basic 7z/gzip/zip archive support with splitting logic.
 - [ ] **Support Workshop UGC/Pubfile**: Extend `-backup-manifests` and `-restore-backup` to support Workshop content.
 - [x] **Manual Backup of Older Manifests**: Add support for manually backing up older depot/manifest IDs and placing them in the correct backup directory.

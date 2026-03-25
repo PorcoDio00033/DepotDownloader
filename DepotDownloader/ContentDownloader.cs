@@ -233,6 +233,59 @@ namespace DepotDownloader
             return false;
         }
 
+        public static async Task<HashSet<uint>> GetAllAccessibleAppIdsAsync()
+        {
+            var appIds = new HashSet<uint>();
+
+            if (steam3 == null || steam3.steamUser.SteamID == null)
+                return appIds;
+
+            if (steam3.steamUser.SteamID.AccountType != EAccountType.AnonUser)
+            {
+                steam3.WaitUntilCallback(() => { }, () => steam3.Licenses != null);
+            }
+
+            if (steam3.Licenses == null && steam3.steamUser.SteamID.AccountType != EAccountType.AnonUser)
+                return appIds;
+
+            IEnumerable<uint> licenseQuery;
+            if (steam3.steamUser.SteamID.AccountType == EAccountType.AnonUser)
+            {
+                licenseQuery = [17906];
+            }
+            else
+            {
+                licenseQuery = steam3.Licenses.Select(x => x.PackageID).Distinct();
+            }
+
+            await steam3.RequestPackageInfo(licenseQuery);
+
+            foreach (var license in licenseQuery)
+            {
+                if (steam3.PackageInfo.TryGetValue(license, out var package) && package != null)
+                {
+                    if (Config.ExcludeFreeApps)
+                    {
+                        var billingType = (EBillingType)package.KeyValues["billingtype"].AsInteger();
+
+                        if (billingType == EBillingType.NoCost ||
+                            billingType == EBillingType.FreeOnDemand ||
+                            billingType == EBillingType.FreeCommercialLicense)
+                        {
+                            continue;
+                        }
+                    }
+
+                    foreach (var child in package.KeyValues["appids"].Children)
+                    {
+                        appIds.Add(child.AsUnsignedInteger());
+                    }
+                }
+            }
+
+            return appIds;
+        }
+
         static async Task<bool> AccountHasAccess(uint appId, uint depotId)
         {
             if (steam3 == null || steam3.steamUser.SteamID == null || (steam3.Licenses == null && steam3.steamUser.SteamID.AccountType != EAccountType.AnonUser))
