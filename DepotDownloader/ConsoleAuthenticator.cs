@@ -15,14 +15,14 @@ namespace DepotDownloader
         {
             if (previousCodeWasIncorrect)
             {
-                Console.Error.WriteLine("The previous 2-factor auth code you have provided is incorrect.");
+                Logger.Error("The previous 2-factor auth code you have provided is incorrect.");
             }
 
             string code;
 
             do
             {
-                Console.Error.Write("STEAM GUARD! Please enter your 2-factor auth code from your authenticator app: ");
+                Logger.Error("STEAM GUARD! Please enter your 2-factor auth code from your authenticator app: ");
                 code = Console.ReadLine()?.Trim();
 
                 if (code == null)
@@ -40,14 +40,14 @@ namespace DepotDownloader
         {
             if (previousCodeWasIncorrect)
             {
-                Console.Error.WriteLine("The previous 2-factor auth code you have provided is incorrect.");
+                Logger.Error("The previous 2-factor auth code you have provided is incorrect.");
             }
 
             string code;
 
             do
             {
-                Console.Error.Write($"STEAM GUARD! Please enter the auth code sent to the email at {email}: ");
+                Logger.Error($"STEAM GUARD! Please enter the auth code sent to the email at {email}: ");
                 code = Console.ReadLine()?.Trim();
 
                 if (code == null)
@@ -68,7 +68,7 @@ namespace DepotDownloader
                 return Task.FromResult(false);
             }
 
-            Console.Error.WriteLine("STEAM GUARD! Use the Steam Mobile App to confirm your sign in...");
+            Logger.Error("STEAM GUARD! Use the Steam Mobile App to confirm your sign in...");
 
             return Task.FromResult(true);
         }

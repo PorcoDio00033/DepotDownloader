@@ -149,7 +149,7 @@ namespace DepotDownloader
                 }
                 else if (badHashWarning)
                 {
-                    Console.WriteLine("Manifest {0} on disk did not match the expected checksum.", manifestId);
+                    Logger.Warning("Manifest {0} on disk did not match the expected checksum.", manifestId);
                 }
             }
 
@@ -178,7 +178,7 @@ namespace DepotDownloader
 
                     if (badHashWarning)
                     {
-                        Console.WriteLine("Manifest {0} on disk did not match the expected checksum.", manifestId);
+                        Logger.Warning("Manifest {0} on disk did not match the expected checksum.", manifestId);
                     }
                 }
 

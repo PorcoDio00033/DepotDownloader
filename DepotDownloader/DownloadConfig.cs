@@ -42,5 +42,8 @@ namespace DepotDownloader
         public bool MinimalOutput { get; set; }
         public uint? ForceBuildId { get; set; }
         public bool ExcludeFreeApps { get; set; }
+
+        public string LogPath { get; set; }
+        public LogLevel LogLevel { get; set; }
     }
 }

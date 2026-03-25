@@ -149,7 +149,7 @@ namespace DepotDownloader
 
             if (appTokens.AppTokensDenied.Contains(appId))
             {
-                Console.WriteLine("Insufficient privileges to get access token for app {0}", appId);
+                Logger.Warning("Insufficient privileges to get access token for app {0}", appId);
             }
 
             foreach (var token_dict in appTokens.AppTokens)
@@ -172,7 +172,7 @@ namespace DepotDownloader
                 {
                     var app = app_value.Value;
 
-                    Console.WriteLine("Got AppInfo for {0}", app.ID);
+                    Logger.Info("Got AppInfo for {0}", app.ID);
                     AppInfo[app.ID] = app;
                 }
 
@@ -232,7 +232,7 @@ namespace DepotDownloader
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to request FreeOnDemand license for app {appId}: {ex.Message}");
+                Logger.Error($"Failed to request FreeOnDemand license for app {appId}: {ex.Message}");
                 return false;
             }
         }
@@ -244,7 +244,7 @@ namespace DepotDownloader
 
             var depotKey = await steamApps.GetDepotDecryptionKey(depotId, appid);
 
-            Console.WriteLine("Got depot key for {0} result: {1}", depotKey.DepotID, depotKey.Result);
+            Logger.Debug("Got depot key for {0} result: {1}", depotKey.DepotID, depotKey.Result);
 
             if (depotKey.Result != EResult.OK)
             {
@@ -264,16 +264,16 @@ namespace DepotDownloader
 
             if (requestCode == 0)
             {
-                Console.WriteLine($"No manifest request code was returned for depot {depotId} from app {appId}, manifest {manifestId}");
+                Logger.Warning($"No manifest request code was returned for depot {depotId} from app {appId}, manifest {manifestId}");
 
                 if (!authenticatedUser)
                 {
-                    Console.WriteLine("Suggestion: Try logging in with -username as old manifests may not be available for anonymous accounts.");
+                    Logger.Warning("Suggestion: Try logging in with -username as old manifests may not be available for anonymous accounts.");
                 }
             }
             else
             {
-                Console.WriteLine($"Got manifest request code for depot {depotId} from app {appId}, manifest {manifestId}, result: {requestCode}");
+                Logger.Debug($"Got manifest request code for depot {depotId} from app {appId}, manifest {manifestId}, result: {requestCode}");
             }
 
             return requestCode;
@@ -293,7 +293,7 @@ namespace DepotDownloader
 
             var cdnAuth = await steamContent.GetCDNAuthToken(appid, depotid, server.Host);
 
-            Console.WriteLine($"Got CDN auth token for {server.Host} result: {cdnAuth.Result} (expires {cdnAuth.Expiration})");
+            Logger.Debug($"Got CDN auth token for {server.Host} result: {cdnAuth.Result} (expires {cdnAuth.Expiration})");
 
             if (cdnAuth.Result != EResult.OK)
             {
@@ -307,7 +307,7 @@ namespace DepotDownloader
         {
             var appPassword = await steamApps.CheckAppBetaPassword(appid, password);
 
-            Console.WriteLine("Retrieved {0} beta keys with result: {1}", appPassword.BetaPasswords.Count, appPassword.Result);
+            Logger.Debug("Retrieved {0} beta keys with result: {1}", appPassword.BetaPasswords.Count, appPassword.Result);
 
             foreach (var entry in appPassword.BetaPasswords)
             {
@@ -326,7 +326,7 @@ namespace DepotDownloader
 
             var privateBeta = await steamApps.PICSGetPrivateBeta(appid, accessToken, branch, branchPassword);
 
-            Console.WriteLine($"Retrieved private beta depot section for {appid} with result: {privateBeta.Result}");
+            Logger.Debug($"Retrieved private beta depot section for {appid} with result: {privateBeta.Result}");
 
             return privateBeta.DepotSection;
         }
@@ -420,7 +420,7 @@ namespace DepotDownloader
 
         private async void ConnectedCallback(SteamClient.ConnectedCallback connected)
         {
-            Console.WriteLine(" Done!");
+            Logger.Info(" Done!");
             bConnecting = false;
 
             // Update our tracking so that we don't time out, even if we need to reconnect multiple times,
@@ -436,16 +436,16 @@ namespace DepotDownloader
             {
                 if (logonDetails.Username != null)
                 {
-                    Console.WriteLine("Logging '{0}' into Steam3...", logonDetails.Username);
+                    Logger.Debug("Logging '{0}' into Steam3...", logonDetails.Username);
                 }
                 else if (logonDetails.AccessToken != null)
                 {
-                    Console.WriteLine("Logging into Steam3 with access token...");
+                    Logger.Info("Logging into Steam3 with access token...");
                 }
 
                 if (ContentDownloader.Config.TokenLacksClientScope && logonDetails.AccessToken != null)
                 {
-                    Console.WriteLine("Refresh token lacks 'client' scope. Fetching WebLogonToken...");
+                    Logger.Debug("Refresh token lacks 'client' scope. Fetching WebLogonToken...");
                     try
                     {
                         var webLogonResult = await GetWebLogonTokenAsync(logonDetails.AccessToken);
@@ -453,7 +453,7 @@ namespace DepotDownloader
                         if (logonDetails.Username == null && !string.IsNullOrEmpty(webLogonResult.AccountName))
                         {
                             logonDetails.Username = webLogonResult.AccountName;
-                            Console.WriteLine($"Fetched username from WebLogonToken: {logonDetails.Username}");
+                            Logger.Debug($"Fetched username from WebLogonToken: {logonDetails.Username}");
                         }
 
                         var logon = new ClientMsgProtobuf<CMsgClientLogon>(EMsg.ClientLogon);
@@ -479,7 +479,7 @@ namespace DepotDownloader
                     }
                     catch (Exception ex)
                     {
-                        Console.Error.WriteLine("Failed to fetch WebLogonToken: " + ex.Message);
+                        Logger.Error("Failed to fetch WebLogonToken: " + ex.Message);
                         Abort(false);
                         return;
                     }
@@ -508,14 +508,14 @@ namespace DepotDownloader
                         }
                         catch (Exception ex)
                         {
-                            Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
+                            Logger.Error("Failed to authenticate with Steam: " + ex.Message);
                             Abort(false);
                             return;
                         }
                     }
                     else if (logonDetails.AccessToken is null && ContentDownloader.Config.UseQrCode)
                     {
-                        Console.WriteLine("Logging in with QR code...");
+                        Logger.Info("Logging in with QR code...");
 
                         try
                         {
@@ -531,7 +531,7 @@ namespace DepotDownloader
                             session.ChallengeURLChanged = () =>
                             {
                                 Console.WriteLine();
-                                Console.WriteLine("The QR code has changed:");
+                                Logger.Info("The QR code has changed:");
 
                                 DisplayQrCode(session.ChallengeURL);
                             };
@@ -545,7 +545,7 @@ namespace DepotDownloader
                         }
                         catch (Exception ex)
                         {
-                            Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
+                            Logger.Error("Failed to authenticate with Steam: " + ex.Message);
                             Abort(false);
                             return;
                         }
@@ -568,7 +568,7 @@ namespace DepotDownloader
 
                             if (ContentDownloader.Config.UseQrCode)
                             {
-                                Console.WriteLine($"Success! Next time you can login with -username {result.AccountName} -remember-password instead of -qr.");
+                                Logger.Info($"Success! Next time you can login with -username {result.AccountName} -remember-password instead of -qr.");
                             }
                         }
                         else
@@ -585,7 +585,7 @@ namespace DepotDownloader
                     }
                     catch (Exception ex)
                     {
-                        Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
+                        Logger.Error("Failed to authenticate with Steam: " + ex.Message);
                         Abort(false);
                         return;
                     }
@@ -606,14 +606,14 @@ namespace DepotDownloader
             // When recovering the connection, we want to reconnect even if the remote disconnects us
             if (!bIsConnectionRecovery && (disconnected.UserInitiated || bExpectingDisconnectRemote))
             {
-                Console.WriteLine("Disconnected from Steam");
+                Logger.Warning("Disconnected from Steam");
 
                 // Any operations outstanding need to be aborted
                 bAborted = true;
             }
             else if (connectionBackoff >= 10)
             {
-                Console.WriteLine("Could not connect to Steam after 10 tries");
+                Logger.Error("Could not connect to Steam after 10 tries");
                 Abort(false);
             }
             else if (!bAborted)
@@ -622,11 +622,11 @@ namespace DepotDownloader
 
                 if (bConnecting)
                 {
-                    Console.WriteLine($"Connection to Steam failed. Trying again (#{connectionBackoff})...");
+                    Logger.Warning($"Connection to Steam failed. Trying again (#{connectionBackoff})...");
                 }
                 else
                 {
-                    Console.WriteLine("Lost connection to Steam. Reconnecting");
+                    Logger.Warning("Lost connection to Steam. Reconnecting");
                 }
 
                 Thread.Sleep(1000 * connectionBackoff);
@@ -655,7 +655,7 @@ namespace DepotDownloader
 
                 if (!isAccessToken)
                 {
-                    Console.WriteLine("This account is protected by Steam Guard.");
+                    Logger.Warning("This account is protected by Steam Guard.");
                 }
 
                 if (is2FA)
@@ -672,7 +672,7 @@ namespace DepotDownloader
                     AccountSettingsStore.Save();
 
                     // TODO: Handle gracefully by falling back to password prompt?
-                    Console.WriteLine($"Access token was rejected ({loggedOn.Result}).");
+                    Logger.Error($"Access token was rejected ({loggedOn.Result}).");
                     Abort(false);
                     return;
                 }
@@ -702,7 +702,7 @@ namespace DepotDownloader
 
             if (loggedOn.Result == EResult.ServiceUnavailable)
             {
-                Console.WriteLine("Unable to login to Steam3: {0}", loggedOn.Result);
+                Logger.Error("Unable to login to Steam3: {0}", loggedOn.Result);
                 Abort(false);
 
                 return;
@@ -710,20 +710,20 @@ namespace DepotDownloader
 
             if (loggedOn.Result != EResult.OK)
             {
-                Console.WriteLine("Unable to login to Steam3: {0}", loggedOn.Result);
+                Logger.Error("Unable to login to Steam3: {0}", loggedOn.Result);
                 Abort();
 
                 return;
             }
 
-            Console.WriteLine(" Done!");
+            Logger.Info(" Done!");
 
             this.seq++;
             IsLoggedOn = true;
 
             if (ContentDownloader.Config.CellID == 0)
             {
-                Console.WriteLine("Using Steam3 suggested CellID: " + loggedOn.CellID);
+                Logger.Debug("Using Steam3 suggested CellID: " + loggedOn.CellID);
                 ContentDownloader.Config.CellID = (int)loggedOn.CellID;
             }
         }
@@ -732,13 +732,13 @@ namespace DepotDownloader
         {
             if (licenseList.Result != EResult.OK)
             {
-                Console.WriteLine("Unable to get license list: {0} ", licenseList.Result);
+                Logger.Warning("Unable to get license list: {0} ", licenseList.Result);
                 Abort();
 
                 return;
             }
 
-            Console.WriteLine("Got {0} licenses for account!", licenseList.LicenseList.Count);
+            Logger.Info("Got {0} licenses for account!", licenseList.LicenseList.Count);
             Licenses = licenseList.LicenseList;
 
             foreach (var license in licenseList.LicenseList)
@@ -758,10 +758,11 @@ namespace DepotDownloader
             using var qrCode = new AsciiQRCode(qrCodeData);
             var qrCodeAsAsciiArt = qrCode.GetLineByLineGraphic(1, drawQuietZones: true);
 
-            Console.WriteLine("Use the Steam Mobile App to sign in with this QR code:");
+            Logger.Info("Use the Steam Mobile App to sign in with this QR code:");
 
             foreach (var line in qrCodeAsAsciiArt)
             {
+                // prevents logging qr to logfile
                 Console.WriteLine(line);
             }
         }

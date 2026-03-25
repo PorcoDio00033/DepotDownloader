@@ -52,18 +52,29 @@ namespace DepotDownloader
 
             consumedArgs = new bool[args.Length];
 
+            ContentDownloader.Config.LogPath = GetParameter<string>(args, "-log-file");
+            var logLevelStr = GetParameter<string>(args, "-log-level");
+            if (!Enum.TryParse(logLevelStr, true, out LogLevel logLevel))
+            {
+                logLevel = LogLevel.Info;
+            }
+            ContentDownloader.Config.LogLevel = logLevel;
+
             if (HasParameter(args, "-debug"))
             {
+                ContentDownloader.Config.LogLevel = LogLevel.Debug;
                 PrintVersion(true);
 
                 DebugLog.Enabled = true;
                 DebugLog.AddListener((category, message) =>
                 {
-                    Console.WriteLine("[{0}] {1}", category, message);
+                    Logger.Debug("[{0}] {1}", category, message);
                 });
 
                 var httpEventListener = new HttpDiagnosticEventListener();
             }
+
+            Logger.Initialize(ContentDownloader.Config.LogPath, ContentDownloader.Config.LogLevel);
 
             var username = GetParameter<string>(args, "-username") ?? GetParameter<string>(args, "-user");
             var password = GetParameter<string>(args, "-password") ?? GetParameter<string>(args, "-pass");
@@ -90,7 +101,7 @@ namespace DepotDownloader
 
                     if (!audList.Contains("renew"))
                     {
-                        Console.WriteLine("Error: The provided token does not contain the 'renew' scope.");
+                        Logger.Error("Error: The provided token does not contain the 'renew' scope.");
                         return 1;
                     }
 
@@ -98,7 +109,7 @@ namespace DepotDownloader
                     {
                         if (!audList.Contains("web"))
                         {
-                            Console.WriteLine("Error: The provided token lacks both 'client' and 'web' scopes. It cannot be used for authentication.");
+                            Logger.Error("Error: The provided token lacks both 'client' and 'web' scopes. It cannot be used for authentication.");
                             return 1;
                         }
                         ContentDownloader.Config.TokenLacksClientScope = true;
@@ -107,7 +118,7 @@ namespace DepotDownloader
                     var ip = payload["ip_subject"]?.ToString() ?? payload["ip_confirmer"]?.ToString();
                     if (ip != null)
                     {
-                        Console.WriteLine($"Token IP: {ip}");
+                        Logger.Info($"Token IP: {ip}");
                         try
                         {
                             using var httpClient = new System.Net.Http.HttpClient();
@@ -116,24 +127,24 @@ namespace DepotDownloader
                             var countryCode = ipInfo?["countryCode"]?.ToString();
                             if (countryCode != null)
                             {
-                                Console.WriteLine("\n!!! IMPORTANT !!!");
-                                Console.WriteLine($"This token is associated with country: {countryCode}");
-                                Console.WriteLine($"Please ensure you are connected to a VPN/Proxy in {countryCode} before proceeding.");
+                                Logger.Info("\n!!! IMPORTANT !!!");
+                                Logger.Info($"This token is associated with country: {countryCode}");
+                                Logger.Info($"Please ensure you are connected to a VPN/Proxy in {countryCode} before proceeding.");
 
                                 if (!Console.IsInputRedirected)
                                 {
-                                    Console.WriteLine("Press Enter to continue once connected...");
+                                    Logger.Info("Press Enter to continue once connected...");
                                     Console.ReadLine();
                                 }
                                 else
                                 {
-                                    Console.WriteLine("Input is redirected, skipping wait for Enter key.");
+                                    Logger.Info("Input is redirected, skipping wait for Enter key.");
                                 }
                             }
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"Warning: Failed to extract IP/country from refresh token: {ex.Message}");
+                            Logger.Warning($"Warning: Failed to extract IP/country from refresh token: {ex.Message}");
                         }
                     }
                 }
@@ -147,13 +158,13 @@ namespace DepotDownloader
             {
                 if (ContentDownloader.Config.RememberPassword && !ContentDownloader.Config.UseQrCode)
                 {
-                    Console.WriteLine("Error: -remember-password can not be used without -username or -qr.");
+                    Logger.Error("Error: -remember-password can not be used without -username or -qr.");
                     return 1;
                 }
             }
             else if (ContentDownloader.Config.UseQrCode)
             {
-                Console.WriteLine("Error: -qr can not be used with -username.");
+                Logger.Error("Error: -qr can not be used with -username.");
                 return 1;
             }
 
@@ -199,11 +210,11 @@ namespace DepotDownloader
                         }
                     }
 
-                    Console.WriteLine("Using filelist: '{0}'.", fileList);
+                    Logger.Info("Using filelist: '{0}'.", fileList);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("Warning: Unable to load filelist: {0}", ex);
+                    Logger.Warning("Warning: Unable to load filelist: {0}", ex);
                 }
             }
 
@@ -216,7 +227,7 @@ namespace DepotDownloader
                 await Client.DetectLancacheServerAsync();
                 if (Client.UseLancacheServer)
                 {
-                    Console.WriteLine("Detected Lancache server! Downloads will be directed through the Lancache.");
+                    Logger.Info("Detected Lancache server! Downloads will be directed through the Lancache.");
 
                     // Increasing the number of concurrent downloads when the cache is detected since the downloads will likely
                     // be served much faster than over the internet.  Steam internally has this behavior as well.
@@ -243,7 +254,7 @@ namespace DepotDownloader
 
             if (appId == ContentDownloader.INVALID_APP_ID && !allApps)
             {
-                Console.WriteLine("Error: -app or -all-apps not specified!");
+                Logger.Error("Error: -app or -all-apps not specified!");
                 return 1;
             }
 
@@ -265,12 +276,12 @@ namespace DepotDownloader
                         ex is ContentDownloaderException
                         || ex is OperationCanceledException)
                     {
-                        Console.WriteLine(ex.Message);
+                        Logger.Error(ex.Message);
                         return 1;
                     }
                     catch (Exception e)
                     {
-                        Console.WriteLine("Download failed to due to an unhandled exception: {0}", e.Message);
+                        Logger.Critical("Download failed to due to an unhandled exception: {0}", e.Message);
                         throw;
                     }
                     finally
@@ -280,7 +291,7 @@ namespace DepotDownloader
                 }
                 else
                 {
-                    Console.WriteLine("Error: InitializeSteam failed");
+                    Logger.Error("Error: InitializeSteam failed");
                     return 1;
                 }
 
@@ -302,12 +313,12 @@ namespace DepotDownloader
                         ex is ContentDownloaderException
                         || ex is OperationCanceledException)
                     {
-                        Console.WriteLine(ex.Message);
+                        Logger.Error(ex.Message);
                         return 1;
                     }
                     catch (Exception e)
                     {
-                        Console.WriteLine("Download failed to due to an unhandled exception: {0}", e.Message);
+                        Logger.Critical("Download failed to due to an unhandled exception: {0}", e.Message);
                         throw;
                     }
                     finally
@@ -317,7 +328,7 @@ namespace DepotDownloader
                 }
                 else
                 {
-                    Console.WriteLine("Error: InitializeSteam failed");
+                    Logger.Error("Error: InitializeSteam failed");
                     return 1;
                 }
 
@@ -336,7 +347,7 @@ namespace DepotDownloader
                 {
                     if (branch != null)
                     {
-                        Console.WriteLine("Warning: -branch ignored because -all-branches is specified.");
+                        Logger.Warning("Warning: -branch ignored because -all-branches is specified.");
                     }
                     branch = null;
                 }
@@ -349,7 +360,7 @@ namespace DepotDownloader
 
                 if (!string.IsNullOrEmpty(ContentDownloader.Config.BetaPassword) && string.IsNullOrEmpty(branch) && !ContentDownloader.Config.DownloadAllBranches)
                 {
-                    Console.WriteLine("Error: Cannot specify -branchpassword when -branch is not specified.");
+                    Logger.Error("Error: Cannot specify -branchpassword when -branch is not specified.");
                     return 1;
                 }
 
@@ -359,7 +370,7 @@ namespace DepotDownloader
 
                 if (ContentDownloader.Config.DownloadAllPlatforms && !string.IsNullOrEmpty(os))
                 {
-                    Console.WriteLine("Error: Cannot specify -os when -all-platforms is specified.");
+                    Logger.Error("Error: Cannot specify -os when -all-platforms is specified.");
                     return 1;
                 }
 
@@ -369,7 +380,7 @@ namespace DepotDownloader
 
                 if (ContentDownloader.Config.DownloadAllArchs && !string.IsNullOrEmpty(arch))
                 {
-                    Console.WriteLine("Error: Cannot specify -osarch when -all-archs is specified.");
+                    Logger.Error("Error: Cannot specify -osarch when -all-archs is specified.");
                     return 1;
                 }
 
@@ -378,7 +389,7 @@ namespace DepotDownloader
 
                 if (ContentDownloader.Config.DownloadAllLanguages && !string.IsNullOrEmpty(language))
                 {
-                    Console.WriteLine("Error: Cannot specify -language when -all-languages is specified.");
+                    Logger.Error("Error: Cannot specify -language when -all-languages is specified.");
                     return 1;
                 }
 
@@ -393,7 +404,7 @@ namespace DepotDownloader
                 {
                     if (depotIdList.Count != manifestIdList.Count)
                     {
-                        Console.WriteLine("Error: -manifest requires one id for every -depot specified");
+                        Logger.Error("Error: -manifest requires one id for every -depot specified");
                         return 1;
                     }
 
@@ -414,14 +425,14 @@ namespace DepotDownloader
                         if (allApps)
                         {
                             var appIds = await ContentDownloader.GetAllAccessibleAppIdsAsync();
-                            Console.WriteLine($"Found {appIds.Count} accessible apps.");
+                            Logger.Info($"Found {appIds.Count} accessible apps.");
                             if (appIds.Count > 0)
                             {
-                                Console.WriteLine("Are you sure you want to download all of them? (y/n)");
+                                Logger.Warning("Are you sure you want to download all of them? (y/n)");
                                 var response = Console.ReadLine();
                                 if (response?.Trim().ToLowerInvariant() != "y")
                                 {
-                                    Console.WriteLine("Aborting.");
+                                    Logger.Info("Aborting.");
                                     return 0;
                                 }
 
@@ -442,11 +453,11 @@ namespace DepotDownloader
                                         ex is ContentDownloaderException
                                         || ex is OperationCanceledException)
                                     {
-                                        Console.WriteLine($"Failed to download app {id}: {ex.Message}");
+                                        Logger.Error($"Failed to download app {id}: {ex.Message}");
                                     }
                                     catch (Exception e)
                                     {
-                                        Console.WriteLine($"Download failed for app {id} due to an unhandled exception: {e.Message}");
+                                        Logger.Critical($"Download failed for app {id} due to an unhandled exception: {e.Message}");
                                     }
                                 }
                             }
@@ -467,12 +478,12 @@ namespace DepotDownloader
                         ex is ContentDownloaderException
                         || ex is OperationCanceledException)
                     {
-                        Console.WriteLine(ex.Message);
+                        Logger.Error(ex.Message);
                         return 1;
                     }
                     catch (Exception e)
                     {
-                        Console.WriteLine("Download failed to due to an unhandled exception: {0}", e.Message);
+                        Logger.Critical("Download failed to due to an unhandled exception: {0}", e.Message);
                         throw;
                     }
                     finally
@@ -482,7 +493,7 @@ namespace DepotDownloader
                 }
                 else
                 {
-                    Console.WriteLine("Error: InitializeSteam failed");
+                    Logger.Error("Error: InitializeSteam failed");
                     return 1;
                 }
 
@@ -500,7 +511,7 @@ namespace DepotDownloader
                 {
                     if (AccountSettingsStore.Instance.LoginTokens.ContainsKey(username))
                     {
-                        Console.WriteLine($"Account \"{username}\" has stored credentials. Did you forget to specify -remember-password?");
+                        Logger.Warning($"Account \"{username}\" has stored credentials. Did you forget to specify -remember-password?");
                     }
 
                     do
@@ -521,7 +532,7 @@ namespace DepotDownloader
                 }
                 else if (username == null)
                 {
-                    Console.WriteLine("No username given. Using anonymous account with dedicated server subscription.");
+                    Logger.Warning("No username given. Using anonymous account with dedicated server subscription.");
                 }
             }
 
@@ -531,12 +542,12 @@ namespace DepotDownloader
 
                 if (password.Length > MAX_PASSWORD_SIZE)
                 {
-                    Console.Error.WriteLine($"Warning: Password is longer than {MAX_PASSWORD_SIZE} characters, which is not supported by Steam.");
+                    Logger.Error($"Warning: Password is longer than {MAX_PASSWORD_SIZE} characters, which is not supported by Steam.");
                 }
 
                 if (!password.All(char.IsAscii))
                 {
-                    Console.Error.WriteLine("Warning: Password contains non-ASCII characters, which is not supported by Steam.");
+                    Logger.Error("Warning: Password contains non-ASCII characters, which is not supported by Steam.");
                 }
             }
 
@@ -619,13 +630,13 @@ namespace DepotDownloader
                 if (!consumedArgs[index])
                 {
                     printError = true;
-                    Console.Error.WriteLine($"Argument #{index + 1} {args[index]} was not used.");
+                    Logger.Warning($"Argument #{index + 1} {args[index]} was not used.");
                 }
             }
 
             if (printError)
             {
-                Console.Error.WriteLine("Make sure you specified the arguments correctly. Check --help for correct arguments.");
+                Logger.Error("Make sure you specified the arguments correctly. Check --help for correct arguments.");
                 Console.Error.WriteLine();
             }
         }
@@ -688,6 +699,8 @@ namespace DepotDownloader
             Console.WriteLine("  -restore-backup          - restore from a backup. If -buildid is not specified, the latest backup compatible with system config is used.");
             Console.WriteLine("  -minimal-output          - suppress file-by-file download progress.");
             Console.WriteLine();
+            Console.WriteLine("  -log-file <filename>     - log output to a file.");
+            Console.WriteLine("  -log-level <level>       - set log level (None, Error, Info, Debug, Verbose). Default: Info.");
             Console.WriteLine("  -debug                   - enable verbose debug logging.");
             Console.WriteLine("  -V or --version          - print version and runtime.");
         }
@@ -695,14 +708,14 @@ namespace DepotDownloader
         static void PrintVersion(bool printExtra = false)
         {
             var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>().InformationalVersion;
-            Console.WriteLine($"DepotDownloader v{version}");
+            Logger.Info($"DepotDownloader v{version}");
 
             if (!printExtra)
             {
                 return;
             }
 
-            Console.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription} on {RuntimeInformation.OSDescription}");
+            Logger.Info($"Runtime: {RuntimeInformation.FrameworkDescription} on {RuntimeInformation.OSDescription}");
         }
     }
 }
