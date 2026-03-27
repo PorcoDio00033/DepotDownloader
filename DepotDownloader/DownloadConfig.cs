@@ -39,7 +39,6 @@ namespace DepotDownloader
         public string LoginToken { get; set; }
         public bool TokenLacksClientScope { get; set; }
         public bool RestoreBackup { get; set; }
-        public bool MinimalOutput { get; set; }
         public uint? ForceBuildId { get; set; }
         public bool ExcludeFreeApps { get; set; }
 

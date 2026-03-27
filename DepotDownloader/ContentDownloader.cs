@@ -20,8 +20,9 @@ using System.Runtime.CompilerServices;
 
 namespace DepotDownloader
 {
-    class ContentDownloaderException(string value) : Exception(value)
+    class ContentDownloaderException(string message, DownloadErrorCode errorCode = DownloadErrorCode.AppDownloadFailed) : Exception(message)
     {
+        public DownloadErrorCode ErrorCode { get; } = errorCode;
     }
 
     static class ContentDownloader
@@ -38,7 +39,7 @@ namespace DepotDownloader
 
         private const string DEFAULT_DOWNLOAD_DIR = "depots";
         private const string MANIFEST_BACKUPS_DIR = "manifest_backups";
-        private const string CONFIG_DIR = ".DepotDownloader";
+        internal const string CONFIG_DIR = ".DepotDownloader";
         private const string DEPOT_CONFIG_FILE = "depot.config";
         private static readonly string STAGING_DIR = Path.Combine(CONFIG_DIR, "staging");
 
@@ -171,6 +172,31 @@ namespace DepotDownloader
             return Path.Combine(installDir, MANIFEST_BACKUPS_DIR);
         }
 
+        public static string GetBaseInstallDirectory()
+        {
+            var installDir = Config.InstallDirectory;
+            if (string.IsNullOrWhiteSpace(installDir))
+            {
+                return DEFAULT_DOWNLOAD_DIR;
+            }
+
+            int firstVar = installDir.IndexOf('{');
+            if (firstVar != -1)
+            {
+                int lastSeparator = installDir.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, firstVar);
+                if (lastSeparator != -1)
+                {
+                    return installDir.Substring(0, lastSeparator);
+                }
+                else
+                {
+                    return ".";
+                }
+            }
+
+            return installDir;
+        }
+
         static bool CreateDirectories(uint appId, uint depotId, uint depotVersion, string branch, uint? parentAppId, KeyValue depotConfig, out string installDir)
         {
             installDir = null;
@@ -233,6 +259,7 @@ namespace DepotDownloader
             return false;
         }
 
+        // returned appid order is random? best for the caller to sort for a consistent order
         public static async Task<HashSet<uint>> GetAllAccessibleAppIdsAsync()
         {
             var appIds = new HashSet<uint>();
@@ -527,6 +554,12 @@ namespace DepotDownloader
 
             steam3.Disconnect();
         }
+
+        public static ulong? GetSteamId()
+        {
+            return steam3?.steamUser?.SteamID?.ConvertToUInt64();
+        }
+
         private static async Task ProcessPublishedFileAsync(uint appId, ulong publishedFileId, List<ValueTuple<string, string>> fileUrls, List<ulong> contentFileIds)
         {
             var details = await steam3.GetPublishedFileDetails(appId, publishedFileId);
@@ -637,27 +670,7 @@ namespace DepotDownloader
         public static async Task RestoreAppAsync(uint appId, string buildId, string branch, string os, string arch, string language, bool lv, bool includeDlc)
         {
             // Load our configuration data containing the depots currently installed
-            var configPath = Config.InstallDirectory;
-            if (string.IsNullOrWhiteSpace(configPath))
-            {
-                configPath = DEFAULT_DOWNLOAD_DIR;
-            }
-            else
-            {
-                int firstVar = configPath.IndexOf('{');
-                if (firstVar != -1)
-                {
-                    int lastSeparator = configPath.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, firstVar);
-                    if (lastSeparator != -1)
-                    {
-                        configPath = configPath.Substring(0, lastSeparator);
-                    }
-                    else
-                    {
-                        configPath = ".";
-                    }
-                }
-            }
+            var configPath = GetBaseInstallDirectory();
 
             Directory.CreateDirectory(Path.Combine(configPath, CONFIG_DIR));
             if (DepotConfigStore.Instance == null)
@@ -668,7 +681,7 @@ namespace DepotDownloader
             var backupBaseDir = Path.Combine(GetManifestBaseDirectory(), appId.ToString());
             if (!Directory.Exists(backupBaseDir))
             {
-                Logger.Info($"No backups found for app {appId}");
+                Logger.Warning($"No backups found for app {appId}");
                 return;
             }
 
@@ -678,7 +691,7 @@ namespace DepotDownloader
                 backupDir = Path.Combine(backupBaseDir, buildId);
                 if (!Directory.Exists(backupDir))
                 {
-                    Logger.Info($"Backup for build {buildId} not found.");
+                    Logger.Warning($"Backup for build {buildId} not found.");
                     return;
                 }
             }
@@ -1172,27 +1185,7 @@ namespace DepotDownloader
             cdnPool = new CDNClientPool(steam3, appId);
 
             // Load our configuration data containing the depots currently installed
-            var configPath = Config.InstallDirectory;
-            if (string.IsNullOrWhiteSpace(configPath))
-            {
-                configPath = DEFAULT_DOWNLOAD_DIR;
-            }
-            else
-            {
-                int firstVar = configPath.IndexOf('{');
-                if (firstVar != -1)
-                {
-                    int lastSeparator = configPath.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, firstVar);
-                    if (lastSeparator != -1)
-                    {
-                        configPath = configPath.Substring(0, lastSeparator);
-                    }
-                    else
-                    {
-                        configPath = ".";
-                    }
-                }
-            }
+            var configPath = GetBaseInstallDirectory();
 
             Directory.CreateDirectory(Path.Combine(configPath, CONFIG_DIR));
             if (DepotConfigStore.Instance == null)
@@ -1214,7 +1207,7 @@ namespace DepotDownloader
                 else
                 {
                     var contentName = GetAppName(appId);
-                    throw new ContentDownloaderException(string.Format("App {0} ({1}) is not available from this account.", appId, contentName));
+                    throw new ContentDownloaderException(string.Format("App {0} ({1}) is not available from this account.", appId, contentName), DownloadErrorCode.NotAvailableForAccount);
                 }
             }
 
@@ -1223,7 +1216,7 @@ namespace DepotDownloader
                 var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
                 if (depots == null)
                 {
-                    throw new ContentDownloaderException($"Couldn't find any depots to download for app {appId}");
+                    throw new ContentDownloaderException($"Couldn't find any depots to download for app {appId}", DownloadErrorCode.DepotNotFound);
                 }
 
                 var branches = depots["branches"];
@@ -1337,13 +1330,13 @@ namespace DepotDownloader
 
                 if (depotManifestIds.Count == 0 && !hasSpecificDepots)
                 {
-                    throw new ContentDownloaderException(string.Format("Couldn't find any depots to download for app {0}", appId));
+                    throw new ContentDownloaderException(string.Format("Couldn't find any depots to download for app {0}", appId), DownloadErrorCode.DepotNotFound);
                 }
 
                 if (depotIdsFound.Count < depotIdsExpected.Count)
                 {
                     var remainingDepotIds = depotIdsExpected.Except(depotIdsFound);
-                    throw new ContentDownloaderException(string.Format("Depot {0} not listed for app {1}", string.Join(", ", remainingDepotIds), appId));
+                    throw new ContentDownloaderException(string.Format("Depot {0} not listed for app {1}", string.Join(", ", remainingDepotIds), appId), DownloadErrorCode.DepotNotFound);
                 }
             }
 
@@ -1420,7 +1413,7 @@ namespace DepotDownloader
             if (!await AccountHasAccess(appId, depotId))
             {
                 Logger.Debug("Depot {0} is not available from this account.", depotId);
-
+                DownloadReporter.RecordDepotFailure(appId, depotId, manifestId, DownloadErrorCode.DepotUnavailableForAccount);
                 return null;
             }
 
@@ -1437,6 +1430,7 @@ namespace DepotDownloader
                 if (manifestId == INVALID_MANIFEST_ID)
                 {
                     Logger.Debug("Depot {0} missing public subsection or manifest section.", depotId);
+                    DownloadReporter.RecordDepotFailure(appId, depotId, manifestId, DownloadErrorCode.DepotMissingManifest);
                     return null;
                 }
             }
@@ -1445,6 +1439,7 @@ namespace DepotDownloader
             if (!steam3.DepotKeys.TryGetValue(depotId, out var depotKey))
             {
                 Logger.Warning("No valid depot key for {0}, unable to download.", depotId);
+                DownloadReporter.RecordDepotFailure(appId, depotId, manifestId, DownloadErrorCode.InvalidDepotKey);
                 return null;
             }
 
@@ -1453,6 +1448,7 @@ namespace DepotDownloader
             if (!CreateDirectories(appId, depotId, uVersion, branch, parentAppId, depotConfig, out var installDir))
             {
                 Logger.Error("Error: Unable to create install directories!");
+                DownloadReporter.RecordDepotFailure(appId, depotId, manifestId, DownloadErrorCode.CreateDirectoryError);
                 return null;
             }
 
@@ -1552,15 +1548,19 @@ namespace DepotDownloader
 
             foreach (var depotFileData in depotsToDownload)
             {
-                await DownloadSteam3AsyncDepotFiles(cts, downloadCounter, depotFileData, allFileNamesAllDepots);
+                try
+                {
+                    await DownloadSteam3AsyncDepotFiles(cts, downloadCounter, depotFileData, allFileNamesAllDepots);
+                }
+                catch (Exception)
+                {
+                    DownloadReporter.RecordDepotFailure(depotFileData.depotDownloadInfo.AppId, depotFileData.depotDownloadInfo.DepotId, depotFileData.depotDownloadInfo.ManifestId, DownloadErrorCode.DownloadFailed);
+                    throw;
+                }
             }
 
             Ansi.Progress(Ansi.ProgressState.Hidden);
 
-            if (Config.MinimalOutput)
-            {
-                Console.WriteLine();
-            }
 
             Logger.Info("Total downloaded: {0} bytes ({1} bytes uncompressed) from {2} depots",
                 downloadCounter.totalBytesCompressed, downloadCounter.totalBytesUncompressed, depots.Count);
@@ -1570,7 +1570,7 @@ namespace DepotDownloader
         {
             var depotCounter = new DepotDownloadCounter();
 
-            Logger.Info("Processing depot {0}", depot.DepotId);
+            Logger.Debug("Processing depot {0}", depot.DepotId);
 
             DepotManifest oldManifest = null;
             DepotManifest newManifest = null;
@@ -1609,9 +1609,16 @@ namespace DepotDownloader
 
                     ulong manifestRequestCode = 0;
                     var manifestRequestCodeExpiration = DateTime.MinValue;
-
+                    DownloadErrorCode lastError = DownloadErrorCode.ManifestDownloadError;
+                    int retries = 0;
                     do
                     {
+                        if (retries > 5)
+                        {
+                            cts.Cancel();
+                            break;
+                        }
+
                         cts.Token.ThrowIfCancellationRequested();
 
                         Server connection = null;
@@ -1667,6 +1674,8 @@ namespace DepotDownloader
                         catch (TaskCanceledException)
                         {
                             Logger.Warning("Connection timeout downloading depot manifest {0} {1}. Retrying.", depot.DepotId, depot.ManifestId);
+                            await Task.Delay(1000 * retries);
+                            retries++;
                         }
                         catch (SteamKitWebRequestException e)
                         {
@@ -1684,16 +1693,19 @@ namespace DepotDownloader
 
                             if (e.StatusCode == HttpStatusCode.Unauthorized || e.StatusCode == HttpStatusCode.Forbidden)
                             {
+                                lastError = DownloadErrorCode.ManifestDownload401;
                                 Logger.Error("Encountered {2} for depot manifest {0} {1}. Aborting.", depot.DepotId, depot.ManifestId, (int)e.StatusCode);
                                 break;
                             }
 
                             if (e.StatusCode == HttpStatusCode.NotFound)
                             {
+                                lastError = DownloadErrorCode.ManifestDownload404;
                                 Logger.Error("Encountered 404 for depot manifest {0} {1}. Aborting.", depot.DepotId, depot.ManifestId);
                                 break;
                             }
 
+                            lastError = DownloadErrorCode.ManifestDownloadError;
                             Logger.Error("Encountered error downloading depot manifest {0} {1}: {2}", depot.DepotId, depot.ManifestId, e.StatusCode);
                         }
                         catch (OperationCanceledException)
@@ -1703,13 +1715,17 @@ namespace DepotDownloader
                         catch (Exception e)
                         {
                             cdnPool.ReturnBrokenConnection(connection);
+                            lastError = DownloadErrorCode.ManifestDownloadError;
                             Logger.Error("Encountered error downloading manifest for depot {0} {1}: {2}", depot.DepotId, depot.ManifestId, e.Message);
+                            await Task.Delay(1000 * retries);
+                            retries++;
                         }
                     } while (newManifest == null);
 
                     if (newManifest == null)
                     {
                         Logger.Error("\nUnable to download manifest {0} for depot {1}", depot.ManifestId, depot.DepotId);
+                        DownloadReporter.RecordDepotFailure(depot.AppId, depot.DepotId, depot.ManifestId, lastError);
                         cts.Cancel();
                     }
 
@@ -1844,10 +1860,7 @@ namespace DepotDownloader
                         continue;
 
                     File.Delete(fileFinalPath);
-                    if (!Config.MinimalOutput)
-                    {
-                        Logger.Info("Deleted {0}", fileFinalPath);
-                    }
+                    Logger.Info("Deleted {0}", fileFinalPath);
                 }
             }
 
@@ -1890,10 +1903,7 @@ namespace DepotDownloader
             var fileDidExist = fi.Exists;
             if (!fileDidExist)
             {
-                if (!Config.MinimalOutput)
-                {
-                    Logger.Info("Pre-allocating {0}", fileFinalPath);
-                }
+                Logger.InfoOverwrite("Pre-allocating {0}", fileFinalPath);
 
                 // create new file. need all chunks
                 using var fs = File.Create(fileFinalPath);
@@ -1903,7 +1913,7 @@ namespace DepotDownloader
                 }
                 catch (IOException ex)
                 {
-                    throw new ContentDownloaderException(string.Format("Failed to allocate file {0}: {1}", fileFinalPath, ex.Message));
+                    throw new ContentDownloaderException(string.Format("Failed to allocate file {0}: {1}", fileFinalPath, ex.Message), DownloadErrorCode.AllocationFailed);
                 }
 
                 neededChunks = new List<DepotManifest.ChunkData>(file.Chunks);
@@ -1919,9 +1929,9 @@ namespace DepotDownloader
                     if (Config.VerifyAll || !hashMatches)
                     {
                         // we have a version of this file, but it doesn't fully match what we want
-                        if (Config.VerifyAll && !Config.MinimalOutput)
+                        if (Config.VerifyAll)
                         {
-                            Logger.Info("Validating {0}", fileFinalPath);
+                            Logger.InfoOverwrite("Validating {0}", fileFinalPath);
                         }
 
                         var matchingChunks = new List<ChunkMatch>();
@@ -1974,7 +1984,7 @@ namespace DepotDownloader
                                 }
                                 catch (IOException ex)
                                 {
-                                    throw new ContentDownloaderException(string.Format("Failed to resize file to expected size {0}: {1}", fileFinalPath, ex.Message));
+                                    throw new ContentDownloaderException(string.Format("Failed to resize file to expected size {0}: {1}", fileFinalPath, ex.Message), DownloadErrorCode.ResizeFailed);
                                 }
 
                                 foreach (var match in copyChunks)
@@ -2006,13 +2016,10 @@ namespace DepotDownloader
                         }
                         catch (IOException ex)
                         {
-                            throw new ContentDownloaderException(string.Format("Failed to allocate file {0}: {1}", fileFinalPath, ex.Message));
+                            throw new ContentDownloaderException(string.Format("Failed to allocate file {0}: {1}", fileFinalPath, ex.Message), DownloadErrorCode.AllocationFailed);
                         }
                     }
-                    if (!Config.MinimalOutput)
-                    {
-                        Logger.Info("Validating {0}", fileFinalPath);
-                    }
+                    Logger.InfoOverwrite("Validating {0}", fileFinalPath);
                     neededChunks = Util.ValidateSteam3FileChecksums(fs, [.. file.Chunks.OrderBy(x => x.Offset)]);
                 }
 
@@ -2021,10 +2028,7 @@ namespace DepotDownloader
                     lock (depotDownloadCounter)
                     {
                         depotDownloadCounter.sizeDownloaded += file.TotalSize;
-                        if (!Config.MinimalOutput)
-                        {
-                            Logger.Info("{0,6:#00.00}% {1}", (depotDownloadCounter.sizeDownloaded / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);
-                        }
+                        Logger.InfoOverwrite("{0,6:#00.00}% {1}", (depotDownloadCounter.sizeDownloaded / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);
                     }
 
                     lock (downloadCounter)
@@ -2086,12 +2090,19 @@ namespace DepotDownloader
             var chunkID = Convert.ToHexString(chunk.ChunkID).ToLowerInvariant();
 
             var written = 0;
+            var retries = 0;
             var chunkBuffer = ArrayPool<byte>.Shared.Rent((int)chunk.UncompressedLength);
 
             try
             {
                 do
                 {
+                    if (retries > 5)
+                    {
+                        cts.Cancel();
+                        break;
+                    }
+
                     cts.Token.ThrowIfCancellationRequested();
 
                     Server connection = null;
@@ -2125,6 +2136,8 @@ namespace DepotDownloader
                     {
                         Logger.Error("Connection timeout downloading chunk {0}", chunkID);
                         cdnPool.ReturnBrokenConnection(connection);
+                        await Task.Delay(1000 * retries);
+                        retries++;
                     }
                     catch (SteamKitWebRequestException e)
                     {
@@ -2149,6 +2162,8 @@ namespace DepotDownloader
                         }
 
                         Logger.Error("Encountered error downloading chunk {0}: {1}", chunkID, e.StatusCode);
+                        await Task.Delay(1000 * retries);
+                        retries++;
                     }
                     catch (OperationCanceledException)
                     {
@@ -2158,6 +2173,8 @@ namespace DepotDownloader
                     {
                         cdnPool.ReturnBrokenConnection(connection);
                         Logger.Error("Encountered unexpected error downloading chunk {0}: {1}", chunkID, e.Message);
+                        await Task.Delay(1000 * retries);
+                        retries++;
                     }
                 } while (written == 0);
 
@@ -2216,20 +2233,12 @@ namespace DepotDownloader
 
                 Ansi.Progress(downloadCounter.totalBytesUncompressed, downloadCounter.completeDownloadSize);
 
-                if (Config.MinimalOutput)
-                {
-                    var percent = (downloadCounter.totalBytesUncompressed / (float)downloadCounter.completeDownloadSize) * 100.0f;
-                    Console.Write($"\r{percent,6:00.00}%");
-                }
             }
 
             if (remainingChunks == 0)
             {
-                if (!Config.MinimalOutput)
-                {
-                    var fileFinalPath = Path.Combine(depot.InstallDir, file.FileName);
-                    Logger.Info("{0,6:#00.00}% {1}", (sizeDownloaded / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);
-                }
+                var fileFinalPath = Path.Combine(depot.InstallDir, file.FileName);
+                Logger.InfoOverwrite("{0,6:#00.00}% {1}", (sizeDownloaded / (float)depotDownloadCounter.completeDownloadSize) * 100.0f, fileFinalPath);
             }
         }
 
@@ -2305,7 +2314,7 @@ namespace DepotDownloader
             SaveAppInfoAsJson(appId, backupDir, depots, branch);
             SaveLuaScript(appId, depots, backupDir);
             SaveKeyVdf(depots, backupDir);
-            SaveAppTokens(backupDir, steam3.AppTokens);
+            SaveAppTokens(appId, depots, backupDir, steam3.AppTokens);
 
             Logger.Info("Backup created in {0}", backupDir);
         }
@@ -2673,7 +2682,7 @@ namespace DepotDownloader
             return null;
         }
 
-        static void SaveAppTokens(string backupDir, Dictionary<uint, ulong> appTokens)
+        static void SaveAppTokens(uint appId, List<DepotDownloadInfo> depots, string backupDir, Dictionary<uint, ulong> appTokens)
         {
             if (appTokens == null || appTokens.Count == 0)
                 return;
@@ -2682,10 +2691,26 @@ namespace DepotDownloader
             if (File.Exists(path)) return;
 
             var obj = new JsonObject();
-            foreach (var kvp in appTokens)
+
+            // Current app token
+            if (appTokens.TryGetValue(appId, out var appToken))
             {
-                obj.Add(kvp.Key.ToString(), JsonValue.Create(kvp.Value.ToString()));
+                obj.Add(appId.ToString(), JsonValue.Create(appToken.ToString()));
             }
+
+            // Current app depots tokens
+            foreach (var depot in depots)
+            {
+                if (appTokens.TryGetValue(depot.DepotId, out var depotToken))
+                {
+                    if (!obj.ContainsKey(depot.DepotId.ToString()))
+                    {
+                        obj.Add(depot.DepotId.ToString(), JsonValue.Create(depotToken.ToString()));
+                    }
+                }
+            }
+
+            if (obj.Count == 0) return;
 
             var jsonString = obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true, IndentSize = 4 });
             File.WriteAllText(path, jsonString);
@@ -2719,7 +2744,7 @@ namespace DepotDownloader
                                 var oses = oslist.Split(',');
                                 if (Array.IndexOf(oses, os) == -1)
                                 {
-                                    if (DebugLog.Enabled) Logger.Debug($"Depot {depotId} incompatible: oslist '{oslist}' does not contain '{os}'");
+                                    Logger.Verbose($"Depot {depotId} incompatible: oslist '{oslist}' does not contain '{os}'");
                                     continue;
                                 }
                             }
@@ -2729,7 +2754,7 @@ namespace DepotDownloader
                             {
                                 if (osarch != arch)
                                 {
-                                    if (DebugLog.Enabled) Logger.Debug($"Depot {depotId} incompatible: osarch '{osarch}' does not match '{arch}'");
+                                    Logger.Verbose($"Depot {depotId} incompatible: osarch '{osarch}' does not match '{arch}'");
                                     continue;
                                 }
                             }
@@ -2737,7 +2762,7 @@ namespace DepotDownloader
                     }
 
                     // If we reached here, the depot is compatible (or has no restrictions)
-                    if (DebugLog.Enabled) Logger.Debug($"Depot {depotId} is compatible with {os}/{arch}");
+                    Logger.Verbose($"Depot {depotId} is compatible with {os}/{arch}");
                     hasCompatibleDepot = true;
                     break;
                 }

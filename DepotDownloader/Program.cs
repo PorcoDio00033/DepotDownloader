@@ -56,19 +56,19 @@ namespace DepotDownloader
             var logLevelStr = GetParameter<string>(args, "-log-level");
             if (!Enum.TryParse(logLevelStr, true, out LogLevel logLevel))
             {
+                Logger.Warning($"Specified log level {logLevelStr} is not valid, defaulting to Info");
                 logLevel = LogLevel.Info;
             }
             ContentDownloader.Config.LogLevel = logLevel;
 
-            if (HasParameter(args, "-debug"))
+            if (ContentDownloader.Config.LogLevel >= LogLevel.Verbose)
             {
-                ContentDownloader.Config.LogLevel = LogLevel.Debug;
                 PrintVersion(true);
 
                 DebugLog.Enabled = true;
                 DebugLog.AddListener((category, message) =>
                 {
-                    Logger.Debug("[{0}] {1}", category, message);
+                    Logger.Verbose("[{0}] {1}", category, message);
                 });
 
                 var httpEventListener = new HttpDiagnosticEventListener();
@@ -244,7 +244,6 @@ namespace DepotDownloader
             ContentDownloader.Config.BackupManifests = HasParameter(args, "-backup-manifests");
             ContentDownloader.Config.BackupDirectory = GetParameter<string>(args, "-backup-dir");
             ContentDownloader.Config.IncludeDLCs = HasParameter(args, "-include-dlc");
-            ContentDownloader.Config.MinimalOutput = HasParameter(args, "-minimal-output");
             ContentDownloader.Config.ExcludeFreeApps = HasParameter(args, "-exclude-free");
 
             #endregion
@@ -277,11 +276,14 @@ namespace DepotDownloader
                         || ex is OperationCanceledException)
                     {
                         Logger.Error(ex.Message);
+                        var errorCode = ex is ContentDownloaderException cde ? cde.ErrorCode : DownloadErrorCode.AppDownloadFailed;
+                        DownloadReporter.RecordAppFailure(appId, errorCode);
                         return 1;
                     }
                     catch (Exception e)
                     {
                         Logger.Critical("Download failed to due to an unhandled exception: {0}", e.Message);
+                        DownloadReporter.RecordAppFailure(appId, DownloadErrorCode.UnhandledException);
                         throw;
                     }
                     finally
@@ -314,11 +316,14 @@ namespace DepotDownloader
                         || ex is OperationCanceledException)
                     {
                         Logger.Error(ex.Message);
+                        var errorCode = ex is ContentDownloaderException cde ? cde.ErrorCode : DownloadErrorCode.AppDownloadFailed;
+                        DownloadReporter.RecordAppFailure(appId, errorCode);
                         return 1;
                     }
                     catch (Exception e)
                     {
                         Logger.Critical("Download failed to due to an unhandled exception: {0}", e.Message);
+                        DownloadReporter.RecordAppFailure(appId, DownloadErrorCode.UnhandledException);
                         throw;
                     }
                     finally
@@ -424,10 +429,24 @@ namespace DepotDownloader
                     {
                         if (allApps)
                         {
-                            var appIds = await ContentDownloader.GetAllAccessibleAppIdsAsync();
+                            var steamId = ContentDownloader.GetSteamId();
+                            if (steamId.HasValue)
+                            {
+                                DownloadReporter.Initialize(steamId.Value);
+                            }
+
+                            var appIds = (await ContentDownloader.GetAllAccessibleAppIdsAsync()).ToList();
+                            appIds.Sort();
+
                             Logger.Info($"Found {appIds.Count} accessible apps.");
                             if (appIds.Count > 0)
                             {
+                                var lastSuccessfulAppId = DownloadReporter.GetLastSuccessfulAppId();
+                                if (lastSuccessfulAppId.HasValue)
+                                {
+                                    Logger.Info($"Resuming download from app ID: {lastSuccessfulAppId.Value}");
+                                }
+
                                 Logger.Warning("Are you sure you want to download all of them? (y/n)");
                                 var response = Console.ReadLine();
                                 if (response?.Trim().ToLowerInvariant() != "y")
@@ -436,8 +455,43 @@ namespace DepotDownloader
                                     return 0;
                                 }
 
+                                var appsToRetry = DownloadReporter.GetAppsToRetry().ToList();
+                                if (appsToRetry.Any())
+                                {
+                                    Logger.Info($"Retrying {appsToRetry.Count} failed downloads.");
+                                    foreach (var id in appsToRetry)
+                                    {
+                                        Logger.Info($"Retrying app: {id}");
+                                        try
+                                        {
+                                            await ContentDownloader.DownloadAppAsync(id, new List<(uint, ulong)>(depotManifestIds), branch, os, arch, language, lv, isUGC, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
+                                            if (!DownloadReporter.HasDepotFailure(id))
+                                            {
+                                                DownloadReporter.RecordSuccessfulApp(id);
+                                            }
+                                        }
+                                        catch (Exception ex) when (ex is ContentDownloaderException || ex is OperationCanceledException)
+                                        {
+                                            Logger.Error($"Failed to retry app {id}: {ex.Message}");
+                                            var errorCode = ex is ContentDownloaderException cde ? cde.ErrorCode : DownloadErrorCode.AppDownloadFailed;
+                                            DownloadReporter.RecordAppFailure(id, errorCode);
+                                        }
+                                        catch (Exception e)
+                                        {
+                                            Logger.Critical($"Retry failed for app {id} due to an unhandled exception: {e.Message}");
+                                            DownloadReporter.RecordAppFailure(id, DownloadErrorCode.UnhandledException);
+                                        }
+                                    }
+                                }
+
                                 foreach (var id in appIds)
                                 {
+                                    if ((lastSuccessfulAppId.HasValue && id < lastSuccessfulAppId.Value) || appsToRetry.Contains(id))
+                                    {
+                                        Logger.Info($"Skipping app {id} as it was already processed.");
+                                        continue;
+                                    }
+
                                     try
                                     {
                                         if (ContentDownloader.Config.RestoreBackup)
@@ -448,16 +502,24 @@ namespace DepotDownloader
                                         {
                                             await ContentDownloader.DownloadAppAsync(id, new List<(uint, ulong)>(depotManifestIds), branch, os, arch, language, lv, isUGC, ContentDownloader.Config.IncludeDLCs).ConfigureAwait(false);
                                         }
+
+                                        if (!DownloadReporter.HasDepotFailure(id))
+                                        {
+                                            DownloadReporter.RecordSuccessfulApp(id);
+                                        }
                                     }
                                     catch (Exception ex) when (
                                         ex is ContentDownloaderException
                                         || ex is OperationCanceledException)
                                     {
                                         Logger.Error($"Failed to download app {id}: {ex.Message}");
+                                        var errorCode = ex is ContentDownloaderException cde ? cde.ErrorCode : DownloadErrorCode.AppDownloadFailed;
+                                        DownloadReporter.RecordAppFailure(id, errorCode);
                                     }
                                     catch (Exception e)
                                     {
                                         Logger.Critical($"Download failed for app {id} due to an unhandled exception: {e.Message}");
+                                        DownloadReporter.RecordAppFailure(id, DownloadErrorCode.UnhandledException);
                                     }
                                 }
                             }
@@ -479,11 +541,20 @@ namespace DepotDownloader
                         || ex is OperationCanceledException)
                     {
                         Logger.Error(ex.Message);
+                        if (allApps)
+                        {
+                            var errorCode = ex is ContentDownloaderException cde ? cde.ErrorCode : DownloadErrorCode.AppDownloadFailed;
+                            DownloadReporter.RecordAppFailure(appId, errorCode);
+                        }
                         return 1;
                     }
                     catch (Exception e)
                     {
                         Logger.Critical("Download failed to due to an unhandled exception: {0}", e.Message);
+                        if (allApps)
+                        {
+                            DownloadReporter.RecordAppFailure(appId, DownloadErrorCode.UnhandledException);
+                        }
                         throw;
                     }
                     finally
@@ -697,11 +768,9 @@ namespace DepotDownloader
             Console.WriteLine("  -backup-manifests        - saves manifests and app info in a new \"manifest_backups/{appId}/{buildid}/\" dir.");
             Console.WriteLine("  -backup-dir <dir>        - the directory in which to place/read backups (default: \"manifest_backups\" inside install dir).");
             Console.WriteLine("  -restore-backup          - restore from a backup. If -buildid is not specified, the latest backup compatible with system config is used.");
-            Console.WriteLine("  -minimal-output          - suppress file-by-file download progress.");
             Console.WriteLine();
             Console.WriteLine("  -log-file <filename>     - log output to a file.");
             Console.WriteLine("  -log-level <level>       - set log level (None, Error, Info, Debug, Verbose). Default: Info.");
-            Console.WriteLine("  -debug                   - enable verbose debug logging.");
             Console.WriteLine("  -V or --version          - print version and runtime.");
         }
 

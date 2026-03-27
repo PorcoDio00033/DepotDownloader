@@ -13,7 +13,7 @@
 ## Pending Tasks
 
 - [x] **Update README**: Reflect recent changes and new arguments in the documentation. Add credits and disclaimers.
-- [ ] **Refactor `RestoreAppAsync`**: Move logic to a separate file and restructure for better readability and maintainability.
+- [ ] **Refactor whole `ContentDownloader.cs`**: It's a mess and too long, extract logic to multiple separate files.
 - [ ] **Add `-package-id` support**: 
     - Enable downloading collections of AppIDs (packages).
     - To handle "missing" DLCs that are part of a bundle but not the main AppInfo (e.g., Monster Hunter Rise Sunbreak).
@@ -26,3 +26,4 @@
 - [x] **Manual Backup of Older Manifests**: Add support for manually backing up older depot/manifest IDs and placing them in the correct backup directory.
     - Not sure if it can be done, maybe manifest info has all the details required already to construct {appId}.json
     - Example old manifest ids: https://steamdb.info/depot/1091501/manifests/
+- [ ] **Add Progress Bar**: some sort of console progress bar with ETA, similar to rclone --progress

@@ -26,6 +26,9 @@ namespace DepotDownloader
         private static readonly object _lock = new object();
         private static StreamWriter _fileWriter;
 
+        private static int _lastConsoleLineLength = 0;
+        private static bool _isLastLineOverwrite = false;
+
         public static void Initialize(string logFilePath, LogLevel level)
         {
             LogFilePath = logFilePath;
@@ -62,7 +65,7 @@ namespace DepotDownloader
 
         public static void Critical(Exception ex, string message, params object[] args)
         {
-            Log(LogLevel.Critical, $"{message}\n{ex}", args);
+            Log(LogLevel.Critical, $"{message} : {ex}", args);
         }
 
         public static void Error(string message, params object[] args)
@@ -72,7 +75,7 @@ namespace DepotDownloader
 
         public static void Error(Exception ex, string message, params object[] args)
         {
-            Log(LogLevel.Error, $"{message}\n{ex}", args);
+            Log(LogLevel.Error, $"{message} : {ex}", args);
         }
 
         public static void Warning(string message, params object[] args)
@@ -82,7 +85,7 @@ namespace DepotDownloader
 
         public static void Warning(Exception ex, string message, params object[] args)
         {
-            Log(LogLevel.Warning, $"{message}\n{ex}", args);
+            Log(LogLevel.Warning, $"{message} : {ex}", args);
         }
 
         public static void Info(string message, params object[] args)
@@ -92,7 +95,13 @@ namespace DepotDownloader
 
         public static void Info(Exception ex, string message, params object[] args)
         {
-            Log(LogLevel.Info, $"{message}\n{ex}", args);
+            Log(LogLevel.Info, $"{message} : {ex}", args);
+        }
+
+        // TODO: check if there's a more elegant way
+        public static void InfoOverwrite(string message, params object[] args)
+        {
+            Log(LogLevel.Info, message, true, args);
         }
 
         public static void Debug(string message, params object[] args)
@@ -102,7 +111,7 @@ namespace DepotDownloader
 
         public static void Debug(Exception ex, string message, params object[] args)
         {
-            Log(LogLevel.Debug, $"{message}\n{ex}", args);
+            Log(LogLevel.Debug, $"{message} : {ex}", args);
         }
 
         public static void Verbose(string message, params object[] args)
@@ -112,10 +121,15 @@ namespace DepotDownloader
 
         public static void Verbose(Exception ex, string message, params object[] args)
         {
-            Log(LogLevel.Verbose, $"{message}\n{ex}", args);
+            Log(LogLevel.Verbose, $"{message} : {ex}", args);
         }
 
         internal static void Log(LogLevel level, string message, params object[] args)
+        {
+            Log(level, message, false, args);
+        }
+
+        internal static void Log(LogLevel level, string message, bool overwrite, params object[] args)
         {
             if (level > Level) return;
 
@@ -127,17 +141,44 @@ namespace DepotDownloader
             {
                 // Console output
                 var originalColor = Console.ForegroundColor;
-                if (level == LogLevel.Error)
+                if (level == LogLevel.Warning || level == LogLevel.Error || level == LogLevel.Critical)
                 {
-                    Console.ForegroundColor = ConsoleColor.Red;
+                    if (_isLastLineOverwrite)
+                    {
+                        Console.WriteLine();
+                        _isLastLineOverwrite = false;
+                        _lastConsoleLineLength = 0;
+                    }
+
+                    Console.ForegroundColor = level == LogLevel.Warning ? ConsoleColor.DarkYellow : ConsoleColor.Red;
                     Console.Error.WriteLine(formattedMessage); // Write errors to stderr
                 }
                 else
                 {
-                    if (level == LogLevel.Debug) Console.ForegroundColor = ConsoleColor.DarkGray;
-                    if (level == LogLevel.Verbose) Console.ForegroundColor = ConsoleColor.DarkGray;
+                    if (level == LogLevel.Debug || level == LogLevel.Verbose)
+                        Console.ForegroundColor = ConsoleColor.DarkGray;
 
-                    Console.WriteLine(formattedMessage);
+                    if (overwrite)
+                    {
+                        string output = "\r" + formattedMessage;
+                        if (formattedMessage.Length < _lastConsoleLineLength)
+                        {
+                            output = output.PadRight(_lastConsoleLineLength + 1);
+                        }
+                        Console.Write(output);
+                        _lastConsoleLineLength = formattedMessage.Length;
+                        _isLastLineOverwrite = true;
+                    }
+                    else
+                    {
+                        if (_isLastLineOverwrite)
+                        {
+                            Console.WriteLine();
+                            _isLastLineOverwrite = false;
+                            _lastConsoleLineLength = 0;
+                        }
+                        Console.WriteLine(formattedMessage);
+                    }
                 }
                 Console.ForegroundColor = originalColor;
 
